@@ -4,3 +4,8 @@ dist
 .gemini
 coverage
 .DS_Store
+
+# Backend Secrets
+backend/serviceAccountKey.json
+serviceAccountKey.json
+*.pem
