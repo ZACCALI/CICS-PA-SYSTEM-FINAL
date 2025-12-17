@@ -1,14 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import api from '../api/axios';
 
 const AppContext = createContext();
 export const useApp = () => useContext(AppContext);
 
 export const AppProvider = ({ children }) => {
   // Announcements
-  const [schedules, setSchedules] = useState(() => {
-      const saved = localStorage.getItem('pa_schedules');
-      return saved ? JSON.parse(saved) : [];
-  });
+  const [schedules, setSchedules] = useState([]);
 
   const [notifications, setNotifications] = useState([
      { id: 1, title: 'System Update Available', message: 'New version 2.3.1 is ready.', time: '2 hours ago', unread: true, type: 'info' },
@@ -26,10 +24,7 @@ export const AppProvider = ({ children }) => {
   const [emergencyHistory, setEmergencyHistory] = useState([]);
 
   // Global Activity Logs
-  const [activityLogs, setActivityLogs] = useState(() => {
-      const saved = localStorage.getItem('pa_logs');
-      return saved ? JSON.parse(saved) : [];
-  });
+  const [activityLogs, setActivityLogs] = useState([]);
 
   // Global Broadcast State (Persistent across navigation)
   const [broadcastActive, setBroadcastActive] = useState(false);
@@ -42,58 +37,75 @@ export const AppProvider = ({ children }) => {
     'Classrooms': false
   });
 
-  // Sync across tabs
+  // Initial Fetch
   useEffect(() => {
-      const handleStorage = (e) => {
-          if (e.key === 'pa_schedules') {
-              setSchedules(JSON.parse(e.newValue || '[]'));
-          } else if (e.key === 'pa_emergency_active') {
-              setEmergencyActive(JSON.parse(e.newValue || 'false'));
-          } else if (e.key === 'pa_logs') {
-              setActivityLogs(JSON.parse(e.newValue || '[]'));
-          } else if (e.key === 'pa_files') {
-              setFiles(JSON.parse(e.newValue || '[]'));
-          }
-      };
-
-      window.addEventListener('storage', handleStorage);
-      return () => window.removeEventListener('storage', handleStorage);
+    fetchSchedules();
+    fetchEmergencyState();
   }, []);
 
-  // Persist Data (with Error Handling for Quota)
-  useEffect(() => {
+  const fetchSchedules = async () => {
       try {
-          localStorage.setItem('pa_schedules', JSON.stringify(schedules));
+          const res = await api.get('/scheduled/');
+          setSchedules(res.data);
       } catch (e) {
-          console.error("Failed to save schedules:", e);
+          console.error("Failed to fetch schedules assigned to local state as fallback if needed, but for now empty", e);
       }
-  }, [schedules]);
+  };
 
+  const fetchEmergencyState = async () => {
+      try {
+          const res = await api.get('/emergency/');
+          setEmergencyActive(res.data.active);
+          setEmergencyHistory(res.data.history || []);
+      } catch (e) {
+          console.error("Failed to fetch emergency state", e);
+      }
+  };
+
+  // Persist Files locally
   useEffect(() => {
       try {
           localStorage.setItem('pa_files', JSON.stringify(files));
       } catch (e) {
-          console.error("Failed to save files (Quota Exceeded?):", e);
-          // Optional: Notify user via state/toast if needed, but for now prevent crash
+          console.error("Failed to save files:", e);
       }
   }, [files]);
 
-  useEffect(() => {
-      localStorage.setItem('pa_logs', JSON.stringify(activityLogs));
-  }, [activityLogs]);
 
   // Methods
-  const addSchedule = (schedule) => {
-      const newSchedule = { ...schedule, id: Date.now(), status: schedule.status || 'Pending'  };
-      setSchedules(prev => [newSchedule, ...prev]);
+  const addSchedule = async (schedule) => {
+      try {
+          // Remove audio blob from payload if present (complex to send via JSON)
+          // We'd upload it first, get URL, then save.
+          // For this demo 'connection', we stick to text metadata or ignore blob in backend save.
+          const { audio, ...payload } = schedule; 
+          // If type is voice, we might want to flag it.
+          const res = await api.post('/scheduled/', payload);
+          // Optimistic update or refetch
+          setSchedules(prev => [ { ...schedule, id: res.data.id }, ...prev]);
+          return res.data;
+      } catch (e) {
+          console.error("Add schedule failed", e);
+      }
   };
 
-  const updateSchedule = (id, updatedData) => {
-      setSchedules(prev => prev.map(s => s.id === id ? { ...s, ...updatedData } : s));
+  const updateSchedule = async (id, updatedData) => {
+       try {
+          const { audio, ...payload } = updatedData;
+          await api.put(`/scheduled/${id}`, payload);
+          setSchedules(prev => prev.map(s => s.id === id ? { ...s, ...updatedData } : s));
+       } catch (e) {
+           console.error("Update schedule failed", e);
+       }
   };
 
-  const deleteSchedule = (id) => {
-      setSchedules(prev => prev.filter(s => s.id !== id));
+  const deleteSchedule = async (id) => {
+      try {
+          await api.delete(`/scheduled/${id}`);
+          setSchedules(prev => prev.filter(s => s.id !== id));
+      } catch (e) {
+          console.error("Delete schedule failed", e);
+      }
   };
 
   const addFile = (fileDetails) => {
@@ -104,40 +116,44 @@ export const AppProvider = ({ children }) => {
       setFiles(prev => prev.filter(f => f.id !== id));
   };
 
-  const toggleEmergency = (user = 'Admin') => {
-      const newState = !emergencyActive;
-      setEmergencyActive(newState);
-      if (newState) {
-          setEmergencyHistory(prev => [{
-              id: Date.now(),
-              action: 'ACTIVATED',
-              time: new Date().toLocaleString(),
-              user: user 
-          }, ...prev]);
-      } else {
-          setEmergencyHistory(prev => [{
-              id: Date.now(),
-              action: 'DEACTIVATED',
-              time: new Date().toLocaleString(),
-              user: user 
-          }, ...prev]);
+  const toggleEmergency = async (user = 'Admin') => {
+      try {
+          const res = await api.post('/emergency/toggle', { user, action: 'TOGGLE' });
+          setEmergencyActive(res.data.active);
+          setEmergencyHistory(res.data.history);
+      } catch (e) {
+          console.error("Emergency toggle failed", e);
       }
   };
 
   const clearEmergencyHistory = () => {
+      // Backend doesn't support clearing history yet, implement if needed
       setEmergencyHistory([]);
   };
 
-  const logActivity = (user, action, type, details) => {
+  const logActivity = async (user, action, type, details) => {
+      // Optimistic local
       const newLog = {
           id: Date.now() + Math.random(),
           user: user || 'Unknown',
-          action, // "Created Schedule", "Activated Emergency", "Broadcasted"
-          type, // "Voice", "Text", "System"
+          action, 
+          type, 
           details,
           time: new Date().toLocaleString()
       };
       setActivityLogs(prev => [newLog, ...prev]);
+      
+      // Send to backend
+      try {
+          await api.post('/realtime/log', {
+              user: user || 'Unknown',
+              type,
+              action,
+              details
+          });
+      } catch (e) {
+          console.error("Log failed", e);
+      }
   };
 
   // Broadcast Refs
@@ -151,16 +167,21 @@ export const AppProvider = ({ children }) => {
           mediaStreamRef.current = stream;
           setBroadcastStream(stream);
 
-          // Audio Context for potential global processing (optional, mainly for cleanup)
+          // Audio Context for monitoring
           const AudioContext = window.AudioContext || window.webkitAudioContext;
           const audioCtx = new AudioContext();
           audioContextRef.current = audioCtx;
           
-          // Connect stream to destination to "hear" it (monitoring)
           const source = audioCtx.createMediaStreamSource(stream);
           source.connect(audioCtx.destination);
 
           setBroadcastActive(true);
+          
+          // Log start
+          // Assuming 'currentUser' is available here? No. 
+          // We rely on caller to logActivity, OR we log here.
+          // Caller (RealTime.jsx) calls logActivity.
+          
           return true;
       } catch (err) {
           console.error("Mic Error:", err);
@@ -207,8 +228,6 @@ export const AppProvider = ({ children }) => {
 
       logActivity,
       broadcastActive,
-      logActivity,
-      broadcastActive,
       startBroadcast,
       stopBroadcast,
       broadcastStream,
@@ -222,3 +241,4 @@ export const AppProvider = ({ children }) => {
     </AppContext.Provider>
   );
 };
+

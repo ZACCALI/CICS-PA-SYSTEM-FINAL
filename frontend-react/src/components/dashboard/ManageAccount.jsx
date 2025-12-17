@@ -3,7 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import Modal from '../common/Modal';
 
 const ManageAccount = () => {
-  const { currentUser, updateUser, getAllUsers, adminDeleteUser, adminResetPassword, adminApproveUser, allUsers } = useAuth();
+  const { currentUser, updateUser, getAllUsers, adminDeleteUser, adminResetPassword, adminApproveUser } = useAuth();
   
   const [formData, setFormData] = useState({
       name: currentUser?.name || '',
@@ -19,8 +19,23 @@ const ManageAccount = () => {
   const [showPass, setShowPass] = useState({ current: false, new: false, confirm: false });
 
   // ADMIN STATE
-  // Derived from Context now for auto-sync
-  const userList = currentUser?.role === 'admin' && allUsers ? Object.values(allUsers) : [];
+  // ADMIN STATE
+  const [userList, setUserList] = useState([]);
+
+  useEffect(() => {
+      if (currentUser?.role === 'admin') {
+          loadUsers();
+      }
+  }, [currentUser]);
+
+  const loadUsers = async () => {
+      try {
+          const users = await getAllUsers();
+          setUserList(users);
+      } catch (error) {
+          console.error("Failed to load users", error);
+      }
+  };
   
   const [selectedUser, setSelectedUser] = useState(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -42,43 +57,51 @@ const ManageAccount = () => {
       }
   };
 
-  const handleUpdate = (e) => {
+  const handleUpdate = async (e) => {
       e.preventDefault();
-      updateUser({ 
-          name: formData.name, 
-          email: formData.email,
-          avatar: formData.avatar 
-      });
-      setMessage('Profile updated successfully!');
-      setTimeout(() => setMessage(''), 3000);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      try {
+        await updateUser({ 
+            name: formData.name, 
+            email: formData.email,
+            avatar: formData.avatar 
+        });
+        setMessage('Profile updated successfully!');
+        setTimeout(() => setMessage(''), 3000);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch (error) {
+        alert("Failed to update profile: " + error.message);
+      }
   };
 
-  const handlePasswordChange = (e) => {
+  const handlePasswordChange = async (e) => {
       e.preventDefault();
       if (passForm.new !== passForm.confirm) {
           alert("New passwords do not match"); 
           return;
       }
-      updateUser({ password: passForm.new }); 
-      setShowPasswordModal(false);
-      setMessage('Password changed successfully!');
-      setTimeout(() => setMessage(''), 3000);
-      setPassForm({ current: '', new: '', confirm: '' });
+      try {
+        await updateUser({ password: passForm.new }); 
+        setShowPasswordModal(false);
+        setMessage('Password changed successfully!');
+        setTimeout(() => setMessage(''), 3000);
+        setPassForm({ current: '', new: '', confirm: '' });
+      } catch (error) {
+        alert("Failed to change password: " + error.message);
+      }
   };
 
   // ADMIN ACTIONS
-  const handleAdminReset = (email) => {
-      const newPass = adminResetPassword(email);
+  const handleAdminReset = async (email) => {
+      const newPass = await adminResetPassword(email);
       if (newPass) {
           setResetResult(`Password reset for ${email}. New Password: ${newPass}`);
           setShowResetModal(true);
       }
   };
 
-  const handleApprove = (email) => {
-      adminApproveUser(email);
-      // Auto-update via context
+  const handleApprove = async (email) => {
+      await adminApproveUser(email);
+      loadUsers();
   };
 
   const handleDeleteClick = (user) => {
@@ -86,16 +109,16 @@ const ManageAccount = () => {
       setShowDeleteModal(true);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
       if (selectedUser) {
           if (selectedUser.email === currentUser.email) {
               alert("You cannot delete your own admin account.");
               setShowDeleteModal(false);
               return;
           }
-          const success = adminDeleteUser(selectedUser.email);
+          const success = await adminDeleteUser(selectedUser.uid || selectedUser.email); // Ensure UID is used if available
           if (success) {
-              setUserList(getAllUsers());
+              loadUsers();
               setShowDeleteModal(false);
               setSelectedUser(null);
           }
