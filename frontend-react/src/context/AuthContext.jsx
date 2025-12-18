@@ -140,16 +140,23 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
-    if (auth.currentUser) {
+    // Optimistic Clear - Stops UI bounce immediately
+    setCurrentUser(null);
+    setUserData(null);
+
+    const user = auth.currentUser;
+    if (user) {
+        // Fire and forget status update (don't block UI)
         try {
-            // Set offline
-            await updateDoc(doc(db, "users", auth.currentUser.uid), {
-                isOnline: false
-            });
+            updateDoc(doc(db, "users", user.uid), {
+                isOnline: false,
+                lastLogin: new Date().toISOString()
+            }).catch(err => console.error("Offline status sync failed", err));
         } catch (e) {
-            console.error("Logout cleanup failed", e);
+            // Ignore synchronous errors
         }
     }
+    // Always sign out locally
     return signOut(auth);
   };
 

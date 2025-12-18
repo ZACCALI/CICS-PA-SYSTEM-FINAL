@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import api from '../api/axios';
+import { useAuth } from './AuthContext';
 import { doc, onSnapshot, collection, query, orderBy, limit } from "firebase/firestore";
 import { db } from '../firebase';
 
@@ -8,6 +9,7 @@ export const useApp = () => useContext(AppContext);
 
 export const AppProvider = ({ children }) => {
   // Announcements
+  const { currentUser } = useAuth();
   const [schedules, setSchedules] = useState([]);
 
   const [notifications, setNotifications] = useState([
@@ -41,6 +43,15 @@ export const AppProvider = ({ children }) => {
 
   // Initial Fetch & Listeners
   useEffect(() => {
+    // Only listen if user is logged in
+    if (!currentUser) {
+        setEmergencyActive(false); 
+        setSchedules([]);
+        setActivityLogs([]);
+        setBroadcastActive(false);
+        return;
+    }
+
     // 1. Emergency System Listener
     const emergencyRef = doc(db, "system_state", "emergency");
     const unsubEmergency = onSnapshot(emergencyRef, (docSnap) => {
@@ -58,8 +69,6 @@ export const AppProvider = ({ children }) => {
     const schedulesQuery = query(collection(db, "schedules"));
     const unsubSchedules = onSnapshot(schedulesQuery, (snapshot) => {
         const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        // Optional: Sort by date/time if not sorted by query
-        // For now, accept default or client-side sort if needed
         setSchedules(list);
     }, (error) => {
         console.error("Schedules sync error:", error);
@@ -70,7 +79,6 @@ export const AppProvider = ({ children }) => {
     const unsubLogs = onSnapshot(logsQuery, (snapshot) => {
         const list = snapshot.docs.map(doc => {
             const data = doc.data();
-            // Handle timestamp object from Firestore
             return { 
                 ...data, 
                 id: doc.id,
@@ -87,7 +95,7 @@ export const AppProvider = ({ children }) => {
         unsubSchedules();
         unsubLogs();
     };
-  }, []);
+  }, [currentUser]);
 
   // Removed manual fetchSchedules as it is now real-time
 
@@ -194,6 +202,80 @@ export const AppProvider = ({ children }) => {
   const audioContextRef = useRef(null);
   const [broadcastStream, setBroadcastStream] = useState(null);
 
+  // Emergency Audio Refs
+  const emergencyAudioRef = useRef(null);
+  const emergencyOscillatorRef = useRef(null);
+  const emergencyIntervalRef = useRef(null);
+
+    // Emergency Audio Logic
+    useEffect(() => {
+        if (emergencyActive) {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            const audioCtx = new AudioContext();
+            emergencyAudioRef.current = audioCtx;
+            
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            emergencyOscillatorRef.current = oscillator;
+
+            oscillator.type = 'sawtooth';
+            oscillator.frequency.value = 800; // Start freq
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            oscillator.start();
+
+            // Handle Autoplay Policy
+            if (audioCtx.state === 'suspended') {
+                const resumeAudio = () => {
+                    audioCtx.resume();
+                    document.removeEventListener('click', resumeAudio);
+                    document.removeEventListener('keydown', resumeAudio);
+                };
+                document.addEventListener('click', resumeAudio);
+                document.addEventListener('keydown', resumeAudio);
+            }
+            
+            // Siren effect
+            let isHigh = false;
+            emergencyIntervalRef.current = setInterval(() => {
+                if (audioCtx && audioCtx.state === 'running') {
+                     const now = audioCtx.currentTime;
+                     const freq = isHigh ? 800 : 1200;
+                     oscillator.frequency.setValueAtTime(freq, now);
+                     isHigh = !isHigh;
+                }
+            }, 600);
+        } else {
+            // Stop emergency audio
+             if (emergencyOscillatorRef.current) { 
+                try { emergencyOscillatorRef.current.stop(); } catch(e){} 
+                emergencyOscillatorRef.current = null;
+            }
+            if (emergencyAudioRef.current) {
+                emergencyAudioRef.current.close(); 
+                emergencyAudioRef.current = null;
+            }
+            if (emergencyIntervalRef.current) {
+                clearInterval(emergencyIntervalRef.current);
+                emergencyIntervalRef.current = null;
+            }
+        }
+
+        return () => {
+            // Cleanup on unmount (app close)
+             if (emergencyOscillatorRef.current) { 
+                try { emergencyOscillatorRef.current.stop(); } catch(e){} 
+            }
+            if (emergencyAudioRef.current) {
+                try { emergencyAudioRef.current.close(); } catch(e){}
+            }
+            if (emergencyIntervalRef.current) clearInterval(emergencyIntervalRef.current);
+        };
+    }, [emergencyActive]);
+
+
   const startBroadcast = async () => {
       try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -243,6 +325,34 @@ export const AppProvider = ({ children }) => {
       setNotifications([]);
   };
 
+
+
+  // Master Audio Stop (for Logout)
+  const stopAllAudio = () => {
+      stopBroadcast();
+      
+      // Stop emergency audio explicity
+      if (emergencyOscillatorRef.current) { 
+          try { emergencyOscillatorRef.current.stop(); } catch(e){} 
+          emergencyOscillatorRef.current = null;
+      }
+      if (emergencyAudioRef.current) {
+          try { emergencyAudioRef.current.close(); } catch(e){}
+          emergencyAudioRef.current = null;
+      }
+      if (emergencyIntervalRef.current) {
+          clearInterval(emergencyIntervalRef.current);
+          emergencyIntervalRef.current = null;
+      }
+  };
+
+  // Stop audio on logout
+  useEffect(() => {
+        if (!currentUser) {
+            stopAllAudio();
+        }
+  }, [currentUser]);
+
   const value = {
       schedules,
       addSchedule,
@@ -264,10 +374,10 @@ export const AppProvider = ({ children }) => {
       startBroadcast,
       stopBroadcast,
       broadcastStream,
+      stopAllAudio, // Exposed
       zones,
       setZones
   };
-
   return (
     <AppContext.Provider value={value}>
       {children}

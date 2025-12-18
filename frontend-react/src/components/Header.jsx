@@ -6,7 +6,7 @@ import { useApp } from '../context/AppContext';
 const Header = ({ toggleSidebar, user }) => {
   const navigate = useNavigate();
   const { currentUser, logout } = useAuth();
-  const { notifications, markAllAsRead, clearAllNotifications } = useApp();
+  const { notifications, markAllAsRead, clearAllNotifications, stopAllAudio } = useApp();
   
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -28,6 +28,7 @@ const Header = ({ toggleSidebar, user }) => {
 
   const handleLogout = async () => {
     try {
+        stopAllAudio(); // Kill all audio immediately
         await logout();
         navigate('/');
     } catch (e) {
