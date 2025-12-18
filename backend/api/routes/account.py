@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from api.firebaseConfig import db, auth
 from api.routes.auth import verify_admin
+from pydantic import BaseModel
+import datetime
 
 manage_account_router = APIRouter(prefix="/account", tags=["account"])
 
@@ -21,6 +23,42 @@ def get_users(admin_user: dict = Depends(verify_admin)):
         return users
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch users: {str(e)}")
+
+class CreateUserRequest(BaseModel):
+    email: str
+    password: str
+    name: str
+    role: str = "user"
+
+@manage_account_router.post("/create")
+def create_user(user: CreateUserRequest, admin_user: dict = Depends(verify_admin)):
+    """
+    Create a new user (Auth + Firestore).
+    Protected: Admin only.
+    """
+    try:
+        # 1. Create in Firebase Auth
+        auth_user = auth.create_user(
+            email=user.email,
+            password=user.password,
+            display_name=user.name
+        )
+        
+        # 2. Create in Firestore
+        new_user_doc = {
+            "uid": auth_user.uid,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "status": "approved", # Admin created = auto approved
+            "createdAt": datetime.datetime.now().isoformat(),
+            "lastLogin": None
+        }
+        db.collection("users").document(auth_user.uid).set(new_user_doc)
+        
+        return {"message": f"User {user.email} created successfully", "uid": auth_user.uid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
 
 @manage_account_router.put("/approve/{uid}")
 def approve_user(uid: str, admin_user: dict = Depends(verify_admin)):

@@ -39,7 +39,7 @@ const Sidebar = ({ activeSection, setActiveSection, role = 'admin', isExpanded =
             <i className={`material-icons mr-4 text-[24px] transition-colors ${activeSection === item.id ? 'text-primary' : 'text-gray-400 group-hover/item:text-primary'}`}>
                 {item.icon}
             </i>
-            <span className={`text-sm font-bold whitespace-nowrap overflow-hidden transition-all duration-300 
+            <span className={`text-base font-bold whitespace-nowrap overflow-hidden transition-all duration-300 
                 ${isExpanded 
                     ? 'opacity-100 w-auto ml-2' 
                     : 'opacity-0 w-0 group-hover/sidebar:opacity-100 group-hover/sidebar:w-auto group-hover/sidebar:ml-2 delay-75'

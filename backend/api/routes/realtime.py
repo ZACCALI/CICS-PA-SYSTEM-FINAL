@@ -23,6 +23,24 @@ def log_broadcast(action: BroadcastAction):
         print(f"Logging failed: {e}")
         return {"message": "Logged (fallback)"}
 
+@real_time_announcements_router.get("/logs")
+def get_logs():
+    try:
+        from firebase_admin import firestore
+        # Order by timestamp desc
+        docs = db.collection("logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).stream()
+        logs = []
+        for doc in docs:
+            data = doc.to_dict()
+            # Convert timestamp to str
+            if "timestamp" in data and data["timestamp"]:
+                data["timestamp"] = str(data["timestamp"])
+            logs.append(data)
+        return logs
+    except Exception as e:
+        print(f"Fetch logs failed: {e}")
+        return []
+
 def firestore_server_timestamp():
     from firebase_admin import firestore
     return firestore.SERVER_TIMESTAMP

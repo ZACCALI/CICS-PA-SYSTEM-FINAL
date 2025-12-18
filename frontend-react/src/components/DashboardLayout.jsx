@@ -62,7 +62,7 @@ const DashboardLayout = ({ children, activeSection, setActiveSection, user }) =>
         {/* Main Content */}
         {/* Margin Left changes based on Desktop Sidebar State */}
         <main 
-            className={`flex-1 p-6 overflow-y-auto h-[calc(100vh-64px)] transition-all duration-300 ${desktopSidebarOpen ? 'md:ml-20' : 'md:ml-0'}`}
+            className={`flex-1 p-6 overflow-y-auto h-[calc(100vh-64px)] transition-all duration-300 animate-fade-in ${desktopSidebarOpen ? 'md:ml-20' : 'md:ml-0'}`}
         >
           {children}
         </main>

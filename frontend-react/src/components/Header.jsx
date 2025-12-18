@@ -26,9 +26,14 @@ const Header = ({ toggleSidebar, user }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleLogout = () => {
-    logout();
-    navigate('/');
+  const handleLogout = async () => {
+    try {
+        await logout();
+        navigate('/');
+    } catch (e) {
+        console.error("Logout failed", e);
+        navigate('/'); // Force redirect anyway
+    }
   };
   
   // Navigation Helper for Dropdowns to avoid prop drilling activeSection if we rely on route
@@ -115,7 +120,7 @@ const Header = ({ toggleSidebar, user }) => {
           >
             <i className="material-icons">notifications</i>
             {unreadCount > 0 && (
-                <span className="absolute top-0 right-0 h-5 w-5 bg-red-500 rounded-full border-2 border-primary animate-pulse flex items-center justify-center text-xs text-white font-bold">{unreadCount}</span>
+                <span className="absolute top-0 right-0 h-5 w-5 bg-red-500 rounded-full border-2 border-primary flex items-center justify-center text-xs text-white font-bold">{unreadCount}</span>
             )}
           </button>
 

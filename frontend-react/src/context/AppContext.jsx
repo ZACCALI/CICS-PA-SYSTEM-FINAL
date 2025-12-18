@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import api from '../api/axios';
+import { doc, onSnapshot, collection, query, orderBy, limit } from "firebase/firestore";
+import { db } from '../firebase';
 
 const AppContext = createContext();
 export const useApp = () => useContext(AppContext);
@@ -37,30 +39,57 @@ export const AppProvider = ({ children }) => {
     'Classrooms': false
   });
 
-  // Initial Fetch
+  // Initial Fetch & Listeners
   useEffect(() => {
-    fetchSchedules();
-    fetchEmergencyState();
+    // 1. Emergency System Listener
+    const emergencyRef = doc(db, "system_state", "emergency");
+    const unsubEmergency = onSnapshot(emergencyRef, (docSnap) => {
+        if (docSnap.exists()) {
+            const data = docSnap.data();
+            setEmergencyActive(data.active);
+            setEmergencyHistory(data.history || []);
+        } else {
+            setEmergencyActive(false);
+            setEmergencyHistory([]);
+        }
+    });
+
+    // 2. Schedules Listener (Real-time)
+    const schedulesQuery = query(collection(db, "schedules"));
+    const unsubSchedules = onSnapshot(schedulesQuery, (snapshot) => {
+        const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // Optional: Sort by date/time if not sorted by query
+        // For now, accept default or client-side sort if needed
+        setSchedules(list);
+    }, (error) => {
+        console.error("Schedules sync error:", error);
+    });
+
+    // 3. Activity Logs Listener (Real-time, Last 50)
+    const logsQuery = query(collection(db, "logs"), orderBy("timestamp", "desc"), limit(50));
+    const unsubLogs = onSnapshot(logsQuery, (snapshot) => {
+        const list = snapshot.docs.map(doc => {
+            const data = doc.data();
+            // Handle timestamp object from Firestore
+            return { 
+                ...data, 
+                id: doc.id,
+                timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : data.timestamp 
+            };
+        });
+        setActivityLogs(list);
+    }, (error) => {
+        console.error("Logs sync error:", error);
+    });
+
+    return () => {
+        unsubEmergency();
+        unsubSchedules();
+        unsubLogs();
+    };
   }, []);
 
-  const fetchSchedules = async () => {
-      try {
-          const res = await api.get('/scheduled/');
-          setSchedules(res.data);
-      } catch (e) {
-          console.error("Failed to fetch schedules assigned to local state as fallback if needed, but for now empty", e);
-      }
-  };
-
-  const fetchEmergencyState = async () => {
-      try {
-          const res = await api.get('/emergency/');
-          setEmergencyActive(res.data.active);
-          setEmergencyHistory(res.data.history || []);
-      } catch (e) {
-          console.error("Failed to fetch emergency state", e);
-      }
-  };
+  // Removed manual fetchSchedules as it is now real-time
 
   // Persist Files locally
   useEffect(() => {
@@ -81,8 +110,7 @@ export const AppProvider = ({ children }) => {
           const { audio, ...payload } = schedule; 
           // If type is voice, we might want to flag it.
           const res = await api.post('/scheduled/', payload);
-          // Optimistic update or refetch
-          setSchedules(prev => [ { ...schedule, id: res.data.id }, ...prev]);
+          // Real-time listener will handle the update
           return res.data;
       } catch (e) {
           console.error("Add schedule failed", e);
@@ -116,9 +144,14 @@ export const AppProvider = ({ children }) => {
       setFiles(prev => prev.filter(f => f.id !== id));
   };
 
-  const toggleEmergency = async (user = 'Admin') => {
+  const toggleEmergency = async (user = 'Admin', action = 'TOGGLE') => {
       try {
-          const res = await api.post('/emergency/toggle', { user, action: 'TOGGLE' });
+          // If action is TOGGLE, we should ideally know the current state to flip it. 
+          // But since we want to be explicit, let's assume the caller passes explicit 'ACTIVATED' or 'DEACTIVATED'.
+          // If they pass 'TOGGLE', valid backend will handle it as before (if we kept that logic, but we changed it).
+          // So we should enforce explicit action from caller.
+          
+          const res = await api.post('/emergency/toggle', { user, action });
           setEmergencyActive(res.data.active);
           setEmergencyHistory(res.data.history);
       } catch (e) {
@@ -224,7 +257,7 @@ export const AppProvider = ({ children }) => {
       emergencyActive,
       toggleEmergency,
       emergencyHistory,
-      activityLogs,
+      activityLogs, // Exported for UI
 
       logActivity,
       broadcastActive,

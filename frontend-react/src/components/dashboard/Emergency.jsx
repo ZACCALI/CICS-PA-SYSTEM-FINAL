@@ -49,7 +49,7 @@ const Emergency = () => {
 
   const handleActivate = () => {
     setShowConfirm(false);
-    toggleEmergency(currentUser?.name || 'Admin');
+    toggleEmergency(currentUser?.name || 'Admin', 'ACTIVATED');
     logActivity(currentUser?.name || 'Admin', 'Activated Emergency', 'Emergency', 'Emergency Alert Triggered for All Zones');
   };
 
@@ -77,7 +77,7 @@ const Emergency = () => {
                 {emergencyActive ? (
                     <button 
                         onClick={() => {
-                            toggleEmergency(currentUser?.name || 'Admin');
+                            toggleEmergency(currentUser?.name || 'Admin', 'DEACTIVATED');
                             logActivity(currentUser?.name || 'Admin', 'Deactivated Emergency', 'Emergency', 'Emergency Alert Halted');
                         }}
                         className="bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 px-8 rounded-lg shadow-lg transform transition hover:scale-105 flex items-center"

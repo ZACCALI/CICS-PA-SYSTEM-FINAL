@@ -7,10 +7,16 @@ import UserDashboard from './pages/UserDashboard'
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppProvider } from './context/AppContext';
 
+import DashboardSkeleton from './components/DashboardSkeleton';
+
 // Protected Route Wrapper
 const ProtectedRoute = ({ children, allowedRole }) => {
-  const { currentUser } = useAuth();
+  const { currentUser, loading } = useAuth();
   
+  if (loading) {
+      return <DashboardSkeleton />;
+  }
+
   if (!currentUser) {
     return <Navigate to="/" replace />;
   }

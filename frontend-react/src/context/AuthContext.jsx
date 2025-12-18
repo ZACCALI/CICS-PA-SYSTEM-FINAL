@@ -6,9 +6,12 @@ import {
   onAuthStateChanged,
   updateProfile,
   updatePassword,
-  sendPasswordResetEmail
+  sendPasswordResetEmail,
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence
 } from "firebase/auth";
-import { doc, setDoc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, setDoc, getDoc, updateDoc, onSnapshot } from "firebase/firestore";
 import { auth, db } from '../firebase';
 import api from '../api/axios';
 
@@ -23,44 +26,59 @@ export const AuthProvider = ({ children }) => {
 
   // Load User Session and Role
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
-        // User is signed in, fetch role/status from Firestore
-        try {
-            const userDocRef = doc(db, "users", user.uid);
-            const userDoc = await getDoc(userDocRef);
-            
-            if (userDoc.exists()) {
-                const data = userDoc.data();
+        // Real-time listener for user data
+        const userDocRef = doc(db, "users", user.uid);
+        
+        // Return the inner unsubscribe function to clean up this listener when auth state changes
+        const unsubDoc = onSnapshot(userDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data();
                 setUserData(data);
                 // Merge auth user and firestore data
                 setCurrentUser({ ...user, ...data });
+                
+                // IMPORTANT: Status Check - Force logout if pending/banned
+                if (data.status === 'pending') {
+                    // Logic to handle pending state updates live? 
+                    // Maybe we don't force logout immediately to allow UI to show "Pending" message?
+                    // But typically we want them out or restricted. 
+                    // Login function blocks them initially. 
+                    // If they are approved while on the page, they gain access!
+                }
             } else {
-                // Determine if this is the FIRST user (Admin seed might not exist yet?)
-                // Or just set basic user
+                 // First time user or doc missing?
                 setUserData({ role: 'user', status: 'pending' });
                 setCurrentUser({ ...user, role: 'user', status: 'pending' });
             }
-        } catch (error) {
+            setLoading(false);
+        }, (error) => {
             console.error("Error fetching user data:", error);
             setCurrentUser(user);
-        }
+            setLoading(false);
+        });
+        
+        return () => unsubDoc(); 
+        
       } else {
         setCurrentUser(null);
         setUserData(null);
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return unsubscribe;
   }, []);
 
-  const login = async (email, password) => {
+  const login = async (email, password, remember = false) => {
+    // Set Persistence based on user preference
+    await setPersistence(auth, remember ? browserLocalPersistence : browserSessionPersistence);
+    
     const result = await signInWithEmailAndPassword(auth, email, password);
-    // Role check is done in useEffect, but we might want to wait for it here?
-    // For now, allow login, components will redirect based on 'currentUser' state updates.
     
     // Explicitly fetch doc to return robust user object immediately if needed
+    // (Though onAuthStateChanged will trigger too)
     const userDocRef = doc(db, "users", result.user.uid);
     const userDoc = await getDoc(userDocRef);
     let data = {};
@@ -71,6 +89,16 @@ export const AuthProvider = ({ children }) => {
          await signOut(auth);
          throw new Error("Account is pending approval. Please contact Admin.");
     }
+    
+    // Update lastLogin and Status (Online)
+    await updateDoc(userDocRef, {
+        lastLogin: new Date().toISOString(),
+        isOnline: true
+    });
+    
+    // Data has changed, let's refresh our local data object
+    data.lastLogin = new Date().toISOString();
+    data.isOnline = true;
     
     const fullUser = { ...result.user, ...data };
     // Add redirect helper
@@ -94,10 +122,14 @@ export const AuthProvider = ({ children }) => {
         role: defaultRole,
         status: 'pending', // Default to pending
         createdAt: new Date().toISOString(),
-        lastLogin: new Date().toISOString() // Initial login
+        isOnline: false,
+        // lastLogin: undefined - until first approved login
     };
 
     await setDoc(doc(db, "users", user.uid), newUserDoc);
+
+    // FORCE SIGNOUT - User is pending approval
+    await signOut(auth);
 
     // Provide robust response
     return { 
@@ -107,7 +139,17 @@ export const AuthProvider = ({ children }) => {
     };
   };
 
-  const logout = () => {
+  const logout = async () => {
+    if (auth.currentUser) {
+        try {
+            // Set offline
+            await updateDoc(doc(db, "users", auth.currentUser.uid), {
+                isOnline: false
+            });
+        } catch (e) {
+            console.error("Logout cleanup failed", e);
+        }
+    }
     return signOut(auth);
   };
 
@@ -122,6 +164,11 @@ export const AuthProvider = ({ children }) => {
       return true;
   };
 
+  const adminCreateUser = async (data) => {
+      const res = await api.post('/account/create', data);
+      return res.data;
+  };
+
   const adminResetPassword = async (uid) => {
      await api.post(`/account/reset/${uid}`);
      return "12345678"; // As defined in backend
@@ -132,11 +179,21 @@ export const AuthProvider = ({ children }) => {
       return true;
   };
   
+  const getSystemLogs = async () => {
+      try {
+         const res = await api.get('/realtime/logs');
+         return res.data;
+      } catch(e) {
+         console.error("Failed to fetch logs:", e);
+         return [];
+      }
+  };
+
   // New helper for password reset (email)
   const resetPasswordEmail = (email) => {
       return sendPasswordResetEmail(auth, email);
   };
-
+ 
   const updateUser = async (data) => {
       const user = auth.currentUser;
       if (!user) return;
@@ -173,20 +230,23 @@ export const AuthProvider = ({ children }) => {
 
   const value = {
     currentUser,
+    loading,
     login,
     signup,
     logout,
     updateUser, // Restored
     getAllUsers, 
+    adminCreateUser,
     adminApproveUser,
     adminDeleteUser,
     adminResetPassword,
+    getSystemLogs, // Added
     resetPasswordEmail
   };
 
   return (
     <AuthContext.Provider value={value}>
-      {!loading && children}
+      {children}
     </AuthContext.Provider>
   );
 };

@@ -18,9 +18,11 @@ async def verify_token(authorization: str = Header(...)):
     token = authorization.split("Bearer ")[1]
     
     try:
-        decoded_token = auth.verify_id_token(token)
+        # Allow 60 seconds of clock skew to prevent "Token used too early" errors
+        decoded_token = auth.verify_id_token(token, clock_skew_seconds=60)
         return decoded_token
     except Exception as e:
+        print(f"Error verifying token: {e}") # Debug logging
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {str(e)}",

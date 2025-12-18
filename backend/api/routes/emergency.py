@@ -26,7 +26,15 @@ def toggle_emergency(action: EmergencyAction):
         doc = ref.get()
         data = doc.to_dict() if doc.exists else {"active": False, "history": []}
         
-        new_state = not data.get("active", False)
+        # Use explicit action
+        should_activate = action.action == "ACTIVATED"
+        current_state = data.get("active", False)
+        
+        # If state is already what we want, just return (idempotency), 
+        # BUT we might want to log it if it's a re-issue? 
+        # Let's simple apply the new state.
+        
+        new_state = should_activate
         
         history_entry = {
             "id": datetime.datetime.now().isoformat(),

@@ -5,16 +5,14 @@ import Schedule from '../components/dashboard/Schedule';
 import Emergency from '../components/dashboard/Emergency';
 import Upload from '../components/dashboard/Upload';
 import ManageAccount from '../components/dashboard/ManageAccount';
+import { useAuth } from '../context/AuthContext';
 
 const UserDashboard = () => {
   const [activeSection, setActiveSection] = useState('realtime');
-  const [user, setUser] = useState(null);
+  const { currentUser: user } = useAuth();
 
   useEffect(() => {
-    const userStr = sessionStorage.getItem('current_user');
-    if (userStr) {
-      setUser(JSON.parse(userStr));
-    }
+    // Session storage logic removed
 
     const handleNavChange = (e) => {
         if (e.detail) setActiveSection(e.detail);
