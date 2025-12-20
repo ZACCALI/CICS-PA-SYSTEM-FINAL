@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import api from '../api/axios';
-import { useAuth } from './AuthContext';
 import { doc, onSnapshot, collection, query, orderBy, limit } from "firebase/firestore";
 import { db } from '../firebase';
 
@@ -9,7 +8,6 @@ export const useApp = () => useContext(AppContext);
 
 export const AppProvider = ({ children }) => {
   // Announcements
-  const { currentUser } = useAuth();
   const [schedules, setSchedules] = useState([]);
 
   const [notifications, setNotifications] = useState([
@@ -43,17 +41,8 @@ export const AppProvider = ({ children }) => {
 
   // Initial Fetch & Listeners
   useEffect(() => {
-    // Only listen if user is logged in
-    if (!currentUser) {
-        setEmergencyActive(false); 
-        setSchedules([]);
-        setActivityLogs([]);
-        setBroadcastActive(false);
-        return;
-    }
-
     // 1. Emergency System Listener
-    const emergencyRef = doc(db, "system_state", "emergency");
+    const emergencyRef = doc(db, "emergency", "status");
     const unsubEmergency = onSnapshot(emergencyRef, (docSnap) => {
         if (docSnap.exists()) {
             const data = docSnap.data();
@@ -69,21 +58,38 @@ export const AppProvider = ({ children }) => {
     const schedulesQuery = query(collection(db, "schedules"));
     const unsubSchedules = onSnapshot(schedulesQuery, (snapshot) => {
         const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        // Optional: Sort by date/time if not sorted by query
+        // For now, accept default or client-side sort if needed
         setSchedules(list);
     }, (error) => {
         console.error("Schedules sync error:", error);
     });
 
-    // 3. Activity Logs Listener (Real-time, Last 50)
+    // 3. Activity Logs Listener (Real-time, Last 50) - Optimized from Polling
     const logsQuery = query(collection(db, "logs"), orderBy("timestamp", "desc"), limit(50));
     const unsubLogs = onSnapshot(logsQuery, (snapshot) => {
         const list = snapshot.docs.map(doc => {
-            const data = doc.data();
-            return { 
-                ...data, 
-                id: doc.id,
-                timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : data.timestamp 
-            };
+             const data = doc.data();
+             // Handle Firestore Timestamp or string
+             let dateObj = new Date();
+             if (data.timestamp && typeof data.timestamp.toDate === 'function') {
+                 dateObj = data.timestamp.toDate();
+             } else if (data.time) {
+                 dateObj = new Date(data.time);
+             }
+             
+             return {
+                 id: doc.id,
+                 ...data,
+                 time: dateObj.toLocaleString('en-US', { 
+                    year: 'numeric', 
+                    month: 'short', 
+                    day: 'numeric', 
+                    hour: '2-digit', 
+                    minute: '2-digit',
+                    second: '2-digit'
+                 })
+             };
         });
         setActivityLogs(list);
     }, (error) => {
@@ -95,7 +101,7 @@ export const AppProvider = ({ children }) => {
         unsubSchedules();
         unsubLogs();
     };
-  }, [currentUser]);
+  }, []);
 
   // Removed manual fetchSchedules as it is now real-time
 
@@ -110,14 +116,16 @@ export const AppProvider = ({ children }) => {
 
 
   // Methods
-  const addSchedule = async (schedule) => {
+  const addSchedule = async (schedule, user = 'Admin') => {
       try {
           // Remove audio blob from payload if present (complex to send via JSON)
           // We'd upload it first, get URL, then save.
           // For this demo 'connection', we stick to text metadata or ignore blob in backend save.
           const { audio, ...payload } = schedule; 
-          // If type is voice, we might want to flag it.
-          const res = await api.post('/scheduled/', payload);
+          // Include user in payload for logging
+          const data = { ...payload, user };
+          
+          const res = await api.post('/scheduled/', data);
           // Real-time listener will handle the update
           return res.data;
       } catch (e) {
@@ -125,19 +133,20 @@ export const AppProvider = ({ children }) => {
       }
   };
 
-  const updateSchedule = async (id, updatedData) => {
+  const updateSchedule = async (id, updatedData, user = 'Admin') => {
        try {
           const { audio, ...payload } = updatedData;
-          await api.put(`/scheduled/${id}`, payload);
+          const data = { ...payload, user };
+          await api.put(`/scheduled/${id}`, data);
           setSchedules(prev => prev.map(s => s.id === id ? { ...s, ...updatedData } : s));
        } catch (e) {
            console.error("Update schedule failed", e);
        }
   };
 
-  const deleteSchedule = async (id) => {
+  const deleteSchedule = async (id, user = 'Admin') => {
       try {
-          await api.delete(`/scheduled/${id}`);
+          await api.delete(`/scheduled/${id}?user=${encodeURIComponent(user)}`);
           setSchedules(prev => prev.filter(s => s.id !== id));
       } catch (e) {
           console.error("Delete schedule failed", e);
@@ -167,15 +176,24 @@ export const AppProvider = ({ children }) => {
       }
   };
 
-  const clearEmergencyHistory = () => {
-      // Backend doesn't support clearing history yet, implement if needed
-      setEmergencyHistory([]);
+  const clearEmergencyHistory = async (user) => {
+      // Optimistic update: Remove immediately from UI
+      setEmergencyHistory(prev => user ? prev.filter(h => h.user !== user) : []);
+      
+      try {
+          const url = user ? `/emergency/history?user=${encodeURIComponent(user)}` : '/emergency/history';
+          await api.delete(url);
+      } catch (e) {
+          console.error("Failed to clear emergency history", e);
+          // Optional: we could revert here if needed, but snapshot listener often corrects state
+      }
   };
 
   const logActivity = async (user, action, type, details) => {
       // Optimistic local
+      const tempId = Date.now() + Math.random();
       const newLog = {
-          id: Date.now() + Math.random(),
+          id: tempId,
           user: user || 'Unknown',
           action, 
           type, 
@@ -186,14 +204,55 @@ export const AppProvider = ({ children }) => {
       
       // Send to backend
       try {
-          await api.post('/realtime/log', {
+          const res = await api.post('/realtime/log', {
               user: user || 'Unknown',
               type,
               action,
               details
           });
+          // Update local ID with real ID if needed, 
+          // or ideally we just refetch logs occasionally.
+          // For session logging, we need the REAL ID to update it.
+          if (res.data.id) {
+              return res.data.id;
+          }
       } catch (e) {
           console.error("Log failed", e);
+      }
+      return null;
+  };
+
+  const updateLog = async (id, updateData) => {
+      if (!id) return;
+      
+      // Optimistic update
+      setActivityLogs(prev => prev.map(log => 
+          log.id === id ? { ...log, ...updateData } : log
+      ));
+
+      try {
+          await api.put(`/realtime/log/${id}`, updateData);
+      } catch(e) {
+          console.error("Update log failed", e);
+      }
+  };
+
+  const deleteLog = async (id, user = 'Admin') => {
+      try {
+          await api.delete(`/realtime/log/${id}?user=${encodeURIComponent(user)}`);
+          setActivityLogs(prev => prev.filter(log => log.id !== id));
+      } catch (e) {
+          console.error("Delete log failed", e);
+      }
+  };
+
+  const deleteLogs = async (ids, user = 'Admin') => {
+      try {
+          // Parallel delete
+          await Promise.all(ids.map(id => api.delete(`/realtime/log/${id}?user=${encodeURIComponent(user)}`)));
+          setActivityLogs(prev => prev.filter(log => !ids.includes(log.id)));
+      } catch (e) {
+          console.error("Bulk delete failed", e);
       }
   };
 
@@ -201,80 +260,6 @@ export const AppProvider = ({ children }) => {
   const mediaStreamRef = useRef(null);
   const audioContextRef = useRef(null);
   const [broadcastStream, setBroadcastStream] = useState(null);
-
-  // Emergency Audio Refs
-  const emergencyAudioRef = useRef(null);
-  const emergencyOscillatorRef = useRef(null);
-  const emergencyIntervalRef = useRef(null);
-
-    // Emergency Audio Logic
-    useEffect(() => {
-        if (emergencyActive) {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            const audioCtx = new AudioContext();
-            emergencyAudioRef.current = audioCtx;
-            
-            const oscillator = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
-            emergencyOscillatorRef.current = oscillator;
-
-            oscillator.type = 'sawtooth';
-            oscillator.frequency.value = 800; // Start freq
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-            
-            oscillator.start();
-
-            // Handle Autoplay Policy
-            if (audioCtx.state === 'suspended') {
-                const resumeAudio = () => {
-                    audioCtx.resume();
-                    document.removeEventListener('click', resumeAudio);
-                    document.removeEventListener('keydown', resumeAudio);
-                };
-                document.addEventListener('click', resumeAudio);
-                document.addEventListener('keydown', resumeAudio);
-            }
-            
-            // Siren effect
-            let isHigh = false;
-            emergencyIntervalRef.current = setInterval(() => {
-                if (audioCtx && audioCtx.state === 'running') {
-                     const now = audioCtx.currentTime;
-                     const freq = isHigh ? 800 : 1200;
-                     oscillator.frequency.setValueAtTime(freq, now);
-                     isHigh = !isHigh;
-                }
-            }, 600);
-        } else {
-            // Stop emergency audio
-             if (emergencyOscillatorRef.current) { 
-                try { emergencyOscillatorRef.current.stop(); } catch(e){} 
-                emergencyOscillatorRef.current = null;
-            }
-            if (emergencyAudioRef.current) {
-                emergencyAudioRef.current.close(); 
-                emergencyAudioRef.current = null;
-            }
-            if (emergencyIntervalRef.current) {
-                clearInterval(emergencyIntervalRef.current);
-                emergencyIntervalRef.current = null;
-            }
-        }
-
-        return () => {
-            // Cleanup on unmount (app close)
-             if (emergencyOscillatorRef.current) { 
-                try { emergencyOscillatorRef.current.stop(); } catch(e){} 
-            }
-            if (emergencyAudioRef.current) {
-                try { emergencyAudioRef.current.close(); } catch(e){}
-            }
-            if (emergencyIntervalRef.current) clearInterval(emergencyIntervalRef.current);
-        };
-    }, [emergencyActive]);
-
 
   const startBroadcast = async () => {
       try {
@@ -325,33 +310,37 @@ export const AppProvider = ({ children }) => {
       setNotifications([]);
   };
 
-
-
-  // Master Audio Stop (for Logout)
   const stopAllAudio = () => {
+      // 1. Stop Broadcast / Mic
       stopBroadcast();
       
-      // Stop emergency audio explicity
-      if (emergencyOscillatorRef.current) { 
-          try { emergencyOscillatorRef.current.stop(); } catch(e){} 
-          emergencyOscillatorRef.current = null;
+      // 2. Stop Text-to-Speech
+      if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
       }
-      if (emergencyAudioRef.current) {
-          try { emergencyAudioRef.current.close(); } catch(e){}
-          emergencyAudioRef.current = null;
-      }
-      if (emergencyIntervalRef.current) {
-          clearInterval(emergencyIntervalRef.current);
-          emergencyIntervalRef.current = null;
-      }
+
+      // 3. Stop any file audio (if managed globally, currently local)
+      
+      // 4. Force Emergency silence? 
+      // Emergency sound is managed by Emergency.jsx effect. When that unmounts, it stops.
+      // But if we want to be safe:
+      // We can't easily reach into Emergency.jsx state from here.
+      // However, we can simply rely on the fact that 'resetState' will clear data?
+      // No, data comes from Firestore.
   };
 
-  // Stop audio on logout
-  useEffect(() => {
-        if (!currentUser) {
-            stopAllAudio();
-        }
-  }, [currentUser]);
+  const resetState = (userName = 'System') => {
+      stopAllAudio();
+      
+      // Force Deactivate Emergency if active
+      if (emergencyActive) {
+          toggleEmergency(userName, 'DEACTIVATED');
+      }
+
+      setSchedules([]);
+      setActivityLogs([]);
+      setNotifications([]);
+  };
 
   const value = {
       schedules,
@@ -367,17 +356,24 @@ export const AppProvider = ({ children }) => {
       emergencyActive,
       toggleEmergency,
       emergencyHistory,
+      clearEmergencyHistory, // Exported
       activityLogs, // Exported for UI
 
       logActivity,
+      updateLog, // New export
+      deleteLog,
+      deleteLogs, // New export
       broadcastActive,
       startBroadcast,
       stopBroadcast,
       broadcastStream,
-      stopAllAudio, // Exposed
       zones,
-      setZones
+      setZones,
+      
+      stopAllAudio, // New
+      resetState    // New
   };
+
   return (
     <AppContext.Provider value={value}>
       {children}

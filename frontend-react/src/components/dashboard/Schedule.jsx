@@ -71,6 +71,11 @@ const Schedule = () => {
               }
           };
       }
+      return () => {
+          if (recognitionRef.current) {
+              recognitionRef.current.abort();
+          }
+      };
   }, []);
 
   const handleZoneChange = (zone) => {
@@ -173,8 +178,7 @@ const Schedule = () => {
 
   const handleDelete = () => {
       if (scheduleToDelete) {
-          deleteSchedule(scheduleToDelete);
-          logActivity(currentUser?.name, 'Deleted Schedule', 'System', `Deleted schedule ID: ${scheduleToDelete}`);
+          deleteSchedule(scheduleToDelete, currentUser?.name);
           setShowDeleteModal(false);
           setScheduleToDelete(null);
       }
@@ -182,6 +186,18 @@ const Schedule = () => {
 
   const handleSubmit = (e) => {
       e.preventDefault();
+      if (!formData.date) {
+          setInfoMessage("Please select a date.");
+          setShowInfoModal(true);
+          return;
+      }
+
+      if (!formData.time) {
+          setInfoMessage("Please select a time.");
+          setShowInfoModal(true);
+          return;
+      }
+
       const activeZones = Object.keys(formData.zones).filter(z => formData.zones[z] && z !== 'All Zones');
       
       if (!activeZones.length) {
@@ -208,11 +224,9 @@ const Schedule = () => {
       };
 
       if (editId) {
-          updateSchedule(editId, scheduleData);
-          logActivity(currentUser?.name, 'Updated Schedule', scheduleData.type === 'voice' ? 'Voice' : 'Text', `Updated schedule for ${scheduleData.date}`);
+          updateSchedule(editId, scheduleData, currentUser?.name);
       } else {
-          addSchedule(scheduleData);
-          logActivity(currentUser?.name, 'Created Schedule', scheduleData.type === 'voice' ? 'Voice' : 'Text', `Scheduled for ${scheduleData.date}`);
+          addSchedule(scheduleData, currentUser?.name);
       }
       
       setShowModal(false);
@@ -238,9 +252,14 @@ const Schedule = () => {
       setIsRecording(false);
   };
 
-  const filteredSchedules = schedules.filter(s => 
-      activeTab === 'pending' ? s.status === 'Pending' : (s.status === 'Completed' || s.status === 'History')
-  );
+  const filteredSchedules = schedules.filter(s => {
+      // 1. Strict Ownership Filter (Both Admin and User see ONLY their own)
+      if (s.user !== currentUser?.name) {
+          return false;
+      }
+      // 2. Status/Tab Filter
+      return activeTab === 'pending' ? s.status === 'Pending' : (s.status === 'Completed' || s.status === 'History');
+  });
 
   return (
     <div className="space-y-6">
@@ -252,13 +271,13 @@ const Schedule = () => {
          <div className="flex space-x-2 w-full sm:w-auto overflow-x-auto pb-2 sm:pb-0">
             <button 
               onClick={() => setActiveTab('pending')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'pending' ? 'bg-primary text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+              className={`flex-1 sm:flex-none justify-center px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'pending' ? 'bg-primary text-white' : 'text-gray-600 hover:bg-gray-100'}`}
             >
               Pending Announcements
             </button>
             <button 
               onClick={() => setActiveTab('history')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'history' ? 'bg-primary text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+              className={`flex-1 sm:flex-none justify-center px-4 py-2 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${activeTab === 'history' ? 'bg-primary text-white' : 'text-gray-600 hover:bg-gray-100'}`}
             >
               History
             </button>

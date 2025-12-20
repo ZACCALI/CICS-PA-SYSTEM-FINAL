@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useApp } from '../context/AppContext';
 
 const Login = () => {
   const navigate = useNavigate();
   const { login, signup, currentUser, loading } = useAuth();
+  const { logActivity } = useApp();
 
   useEffect(() => {
       if (!loading && currentUser) {
@@ -68,11 +70,23 @@ const Login = () => {
     try {
       if (isLoginMode) {
          const user = await login(username.trim(), password.trim(), remember);
+         
+         // Log Login Activity - REMOVED per request
+         // if (logActivity && user.name) {
+         //     logActivity(user.name, 'Logged In', 'Session', `User logged in from Login Page`);
+         // }
+
          setSuccess(true);
          setTimeout(() => navigate(user.redirect), 1000);
       } else {
          // Signup Flow
-         await signup({ email: username, password, name });
+         const user = await signup({ email: username, password, name });
+         
+         // Log Signup Activity
+         if (logActivity) {
+             logActivity(name, 'Registered', 'Account', `User registered and is pending approval`);
+         }
+         
          setRegistrationSuccess(true);
          setFormLoading(false);
       }

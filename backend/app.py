@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes.auth import auth_router
 from api.routes.realtime import real_time_announcements_router 
 from api.routes.scheduled import scheduled_announcements_router
-from api.routes.audio import audio_router
+
 from api.routes.account import manage_account_router
 from api.routes.emergency import emergency_route
 

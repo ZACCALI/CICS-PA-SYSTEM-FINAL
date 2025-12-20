@@ -5,7 +5,7 @@ import { db } from '../../firebase';
 import Modal from '../common/Modal';
 
 const ManageAccount = () => {
-  const { currentUser, updateUser, getAllUsers, adminDeleteUser, adminResetPassword, adminApproveUser, adminCreateUser, getSystemLogs } = useAuth();
+  const { currentUser, updateUser, adminUpdateProfile, getAllUsers, adminDeleteUser, adminResetPassword, adminApproveUser, adminCreateUser, getSystemLogs } = useAuth();
   
   const [formData, setFormData] = useState({
       name: '',
@@ -25,6 +25,11 @@ const ManageAccount = () => {
   }, [currentUser]);
 
   const [message, setMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [passForm, setPassForm] = useState({ current: '', new: '', confirm: '' });
   
@@ -64,6 +69,8 @@ const ManageAccount = () => {
   const loadUsersFallback = async () => {
       try {
           const users = await getAllUsers();
+          // Safety check: only update if component is still effectively "active" in context of this async flow
+          // (React 18 handles unmount updates better, but good practice)
           setUserList(users);
       } catch (error) {
           console.error("Failed to load users (fallback)", error);
@@ -101,33 +108,47 @@ const ManageAccount = () => {
   const handleUpdate = async (e) => {
       e.preventDefault();
       try {
-        await updateUser({ 
+        const payload = { 
             name: formData.name, 
             email: formData.email,
             avatar: formData.avatar 
-        });
-        setMessage('Profile updated successfully!');
-        setTimeout(() => setMessage(''), 3000);
+        };
+
+        if (currentUser.role === 'admin') {
+            await adminUpdateProfile(payload);
+        } else {
+            await updateUser(payload);
+        }
+
+        setSuccessMessage('Profile updated successfully!');
+        setShowSuccessModal(true);
         window.scrollTo({ top: 0, behavior: 'smooth' });
       } catch (error) {
-        alert("Failed to update profile: " + error.message);
+        setErrorMessage("Failed to update profile: " + error.message);
+        setShowErrorModal(true);
       }
   };
 
   const handlePasswordChange = async (e) => {
       e.preventDefault();
       if (passForm.new !== passForm.confirm) {
-          alert("New passwords do not match"); 
+          setErrorMessage("New passwords do not match");
+          setShowErrorModal(true);
           return;
       }
       try {
-        await updateUser({ password: passForm.new }); 
+        if (currentUser.role === 'admin') {
+            await adminUpdateProfile({ password: passForm.new });
+        } else {
+            await updateUser({ password: passForm.new }); 
+        } 
         setShowPasswordModal(false);
-        setMessage('Password changed successfully!');
-        setTimeout(() => setMessage(''), 3000);
+        setSuccessMessage('Password changed successfully!');
+        setShowSuccessModal(true);
         setPassForm({ current: '', new: '', confirm: '' });
       } catch (error) {
-        alert("Failed to change password: " + error.message);
+        setErrorMessage("Failed to change password: " + error.message);
+        setShowErrorModal(true);
       }
   };
 
@@ -150,12 +171,13 @@ const ManageAccount = () => {
       if (!selectedUser) return;
       try {
           await adminApproveUser(selectedUser.uid);
-          setMessage(`User ${selectedUser.name} approved successfully.`);
-          setTimeout(() => setMessage(''), 3000);
+          setSuccessMessage(`User ${selectedUser.name} approved successfully.`);
+          setShowSuccessModal(true);
           setShowApproveModal(false);
           setSelectedUser(null);
       } catch (error) {
-          alert("Failed to approve user: " + error.message);
+          setErrorMessage("Failed to approve user: " + error.message);
+          setShowErrorModal(true);
       }
   };
 
@@ -168,7 +190,8 @@ const ManageAccount = () => {
       if (!selectedUser) return;
       
       if (selectedUser.email === currentUser.email) {
-          alert("You cannot delete your own admin account.");
+          setErrorMessage("You cannot delete your own admin account.");
+          setShowErrorModal(true);
           setShowDeleteModal(false);
           return;
       }
@@ -176,13 +199,14 @@ const ManageAccount = () => {
       try {
           const success = await adminDeleteUser(selectedUser.uid); 
           if (success) {
-              setMessage('User rejected/deleted successfully.');
-              setTimeout(() => setMessage(''), 3000);
+              setSuccessMessage('User rejected/deleted successfully.');
+              setShowSuccessModal(true);
               setShowDeleteModal(false);
               setSelectedUser(null);
           }
       } catch (error) {
-           alert("Failed to delete user: " + error.message);
+           setErrorMessage("Failed to delete user: " + error.message);
+           setShowErrorModal(true);
       }
   };
 
@@ -208,12 +232,13 @@ const ManageAccount = () => {
       e.preventDefault();
       try {
           await adminCreateUser(addUserForm);
-          setMessage(`User ${addUserForm.email} created successfully.`);
-          setTimeout(() => setMessage(''), 3000);
+          setSuccessMessage(`User ${addUserForm.email} created successfully.`);
+          setShowSuccessModal(true);
           setShowAddUserModal(false);
           setAddUserForm({ name: '', email: '', password: '', role: 'user' });
       } catch (error) {
-          alert("Failed to create user: " + (error.response?.data?.detail || error.message));
+          setErrorMessage("Failed to create user: " + (error.response?.data?.detail || error.message));
+          setShowErrorModal(true);
       }
   };
 
@@ -353,7 +378,7 @@ const ManageAccount = () => {
                     </div>
                 </div>
                 
-                <div className="overflow-x-auto">
+                <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-left text-sm text-gray-600">
                         <thead className="bg-gray-50 border-b border-gray-200 font-semibold text-gray-700 uppercase tracking-wider text-xs">
                             <tr>
@@ -428,6 +453,59 @@ const ManageAccount = () => {
                             )))}
                         </tbody>
                     </table>
+                </div>
+
+                {/* Mobile Card View */}
+                <div className="md:hidden">
+                    {activeUsers.length === 0 ? (
+                        <div className="text-center py-8 text-gray-400 bg-gray-50">No active users found.</div>
+                    ) : (
+                        <div className="divide-y divide-gray-100">
+                             {activeUsers.map(u => (
+                                 <div key={u.uid} className="p-4 hover:bg-gray-50 transition-colors">
+                                     <div className="flex items-center justify-between mb-3">
+                                         <div className="flex items-center">
+                                            <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold mr-3 shadow-sm">
+                                                {u.name.charAt(0)}
+                                            </div>
+                                            <div>
+                                                <div className="font-bold text-gray-900">{u.name}</div>
+                                                <div className="text-xs text-gray-500">{u.email}</div>
+                                            </div>
+                                         </div>
+                                         <span className={`px-2 py-1 text-[10px] rounded-full font-bold uppercase ${u.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-blue-50 text-blue-600'}`}>
+                                            {u.role}
+                                        </span>
+                                     </div>
+                                     
+                                     <div className="flex justify-between items-center text-xs text-gray-500 mb-3 px-1">
+                                         <div className="flex items-center">
+                                             <i className="material-icons text-sm mr-1">history</i>
+                                             {u.lastLogin ? new Date(u.lastLogin).toLocaleDateString() : 'Never'}
+                                         </div>
+                                         <div>
+                                            {u.status === 'pending' ? (
+                                                <span className="text-yellow-600 font-bold">Pending</span>
+                                            ) : (
+                                                <span className={`${u.isOnline ? 'text-green-600' : 'text-gray-400'} font-bold flex items-center`}>
+                                                    <span className={`w-2 h-2 rounded-full mr-1 ${u.isOnline ? 'bg-green-500' : 'bg-gray-300'}`}></span>
+                                                    {u.isOnline ? 'Online' : 'Offline'}
+                                                </span>
+                                            )}
+                                         </div>
+                                     </div>
+                                     
+                                     <div className="flex bg-gray-50 p-2 rounded-lg gap-2 text-xs font-medium">
+                                         <button onClick={() => viewLogs(u)} className="flex-1 py-1.5 text-primary bg-white border border-gray-200 rounded shadow-sm hover:bg-gray-50">Logs</button>
+                                         <button onClick={() => handleAdminReset(u.uid)} className="flex-1 py-1.5 text-orange-600 bg-white border border-gray-200 rounded shadow-sm hover:bg-gray-50">Reset Pass</button>
+                                         {u.email !== currentUser.email && (
+                                            <button onClick={() => handleDeleteClick(u)} className="flex-1 py-1.5 text-red-600 bg-white border border-gray-200 rounded shadow-sm hover:bg-gray-50">Delete</button>
+                                         )}
+                                     </div>
+                                 </div>
+                             ))}
+                        </div>
+                    )}
                 </div>
             </div>
         </div>
@@ -544,6 +622,23 @@ const ManageAccount = () => {
                   </select>
               </div>
           </form>
+      </Modal>
+
+      {/* Error Modal */}
+      <Modal isOpen={showErrorModal} onClose={() => setShowErrorModal(false)} title="Error" type="danger"
+          footer={<button onClick={() => setShowErrorModal(false)} className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">Close</button>}
+      >
+          <p className="text-gray-700">{errorMessage}</p>
+      </Modal>
+
+      {/* Success Modal */}
+      <Modal isOpen={showSuccessModal} onClose={() => setShowSuccessModal(false)} title="Success" type="info" // Using info styling which is blue, but we can assume it's fine or customize Modal later
+          footer={<button onClick={() => setShowSuccessModal(false)} className="px-6 py-2 bg-primary text-white rounded-lg">OK</button>}
+      >
+          <div className="flex items-center text-green-600">
+             <i className="material-icons mr-2">check_circle</i>
+             <p className="font-medium text-gray-800">{successMessage}</p>
+          </div>
       </Modal>
     </div>
   );

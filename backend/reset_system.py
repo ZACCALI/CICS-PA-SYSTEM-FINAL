@@ -68,7 +68,7 @@ def enforce_single_admin():
                 uid = user.uid
                 print(f" -> Auth user exists ({uid}). Promoting to admin...")
             except auth.UserNotFoundError:
-                user = auth.create_user(email=email, password=password, display_name="System Admin")
+                user = auth.create_user(email=email, password=password, display_name="System Administrator")
                 uid = user.uid
                 print(f" -> Created new Auth user ({uid}).")
             
@@ -78,7 +78,7 @@ def enforce_single_admin():
                 'email': email,
                 'role': 'admin',
                 'status': 'approved',
-                'name': 'System Admin'
+                'name': 'System Administrator'
             }
             db.collection("users").document(uid).set(target_admin, merge=True)
             print(" -> Admin created/promoted successfully.")
@@ -125,6 +125,23 @@ def cleanup_non_admins():
 
     print(f"Cleanup Complete. Deleted {count} users.")
 
+def reset_emergency_state():
+    print("--- Resetting Emergency State ---")
+    try:
+        # Old path cleanup (optional but good)
+        db.collection("system_state").document("emergency").delete()
+        
+        # New path reset
+        db.collection("emergency").document("status").set({
+            "active": False,
+            "history": [],
+            "current_log_id": None
+        })
+        print(" -> Emergency state reset to inactive/empty.")
+    except Exception as e:
+        print(f" -> Error resetting emergency: {e}")
+
 if __name__ == "__main__":
     enforce_single_admin()
     cleanup_non_admins()
+    reset_emergency_state()

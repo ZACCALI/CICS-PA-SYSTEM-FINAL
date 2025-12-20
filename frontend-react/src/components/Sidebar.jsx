@@ -5,7 +5,7 @@ const Sidebar = ({ activeSection, setActiveSection, role = 'admin', isExpanded =
     { id: 'realtime', label: 'Broadcast', icon: 'campaign' },
     { id: 'schedule', label: 'Schedule', icon: 'schedule' },
     { id: 'emergency', label: 'Emergency', icon: 'emergency' },
-    { id: 'history', label: 'History', icon: 'history_edu' }, // Admin Only
+    { id: 'history', label: 'Activity Logs', icon: 'history_edu' }, // Admin Only
     { id: 'upload', label: 'Uploads', icon: 'upload' },
     { id: 'manage-account', label: 'Account', icon: 'admin_panel_settings' },
   ];

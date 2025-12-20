@@ -4,9 +4,13 @@ import { useAuth } from '../../context/AuthContext';
 import Modal from '../common/Modal';
 
 const RealTime = () => {
-  const { addSchedule, logActivity, broadcastActive, startBroadcast, stopBroadcast, broadcastStream, zones, setZones } = useApp();
+  const { addSchedule, logActivity, updateLog, broadcastActive, startBroadcast, stopBroadcast, broadcastStream, zones, setZones } = useApp();
   const { currentUser } = useAuth();
-  // removed local broadcasting state
+  const [currentLogId, setCurrentLogId] = useState(null); // Track session log
+  
+  // Ref for readable start time
+  const startTimeStrRef = useRef('');
+  const startTimeRef = useRef(null);
   
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
@@ -140,6 +144,20 @@ const RealTime = () => {
   const toggleBroadcast = async () => {
     if (broadcastActive) {
         stopBroadcast();
+        
+        if (currentLogId) {
+             const durationSec = Math.round((Date.now() - startTimeRef.current) / 1000);
+             const endTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+             
+             updateLog(currentLogId, {
+                 action: 'Voice Broadcast Session',
+                 details: `Voice Broadcast (Start: ${startTimeStrRef.current} - End: ${endTimeStr})`
+             });
+             setCurrentLogId(null);
+        } else {
+             // Fallback
+             logActivity(currentUser?.name, 'Stopped Voice Broadcast', 'Voice', 'Microphone deactivated');
+        }
         return;
     }
 
@@ -151,7 +169,11 @@ const RealTime = () => {
     
     const success = await startBroadcast();
     if (success) {
-        logActivity(currentUser?.name, 'Started Voice Broadcast', 'Voice', 'Microphone active');
+        startTimeRef.current = Date.now();
+        startTimeStrRef.current = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        
+        const logId = await logActivity(currentUser?.name, 'Active Voice Broadcast', 'Voice', 'Microphone is active...');
+        setCurrentLogId(logId);
     } else {
         setModalMessage("Could not access microphone.");
         setShowModal(true);

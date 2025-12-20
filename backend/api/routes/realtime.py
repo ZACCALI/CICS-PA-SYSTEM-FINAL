@@ -16,12 +16,56 @@ def log_broadcast(action: BroadcastAction):
         # Just log to a 'logs' collection in Firestore
         log_entry = action.dict()
         log_entry["timestamp"] = firestore_server_timestamp()
-        db.collection("logs").add(log_entry)
-        return {"message": "Logged successfully"}
+        # Add and get ref
+        update_time, doc_ref = db.collection("logs").add(log_entry)
+        return {"message": "Logged successfully", "id": doc_ref.id}
     except Exception as e:
         # Don't fail the request if logging fails, just print
         print(f"Logging failed: {e}")
-        return {"message": "Logged (fallback)"}
+        return {"message": "Logged (fallback)", "id": None}
+
+class LogUpdate(BaseModel):
+    action: str = None
+    details: str = None
+
+@real_time_announcements_router.put("/log/{log_id}")
+def update_log(log_id: str, update: LogUpdate):
+    try:
+        doc_ref = db.collection("logs").document(log_id)
+        if not doc_ref.get().exists:
+            raise HTTPException(status_code=404, detail="Log not found")
+        
+        # Only update provided fields
+        fields_to_update = {k: v for k, v in update.dict().items() if v is not None}
+        if fields_to_update:
+            doc_ref.update(fields_to_update)
+            
+        return {"message": "Log updated successfully"}
+    except Exception as e:
+         print(f"Update log failed: {e}")
+         raise HTTPException(status_code=500, detail=str(e))
+
+@real_time_announcements_router.delete("/log/{log_id}")
+def delete_log(log_id: str, user: str = "Admin"):
+    try:
+        # Fetch the target log first
+        doc_ref = db.collection("logs").document(log_id)
+        doc_snap = doc_ref.get()
+        
+        if not doc_snap.exists:
+             raise HTTPException(status_code=404, detail="Log not found")
+             
+        log_data = doc_snap.to_dict()
+        
+        # Delete the target log
+        doc_ref.delete()
+        
+        return {"message": "Log deleted successfully"}
+    except Exception as e:
+        # Re-raise HTTP exceptions directly
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"Failed to delete log: {str(e)}")
 
 @real_time_announcements_router.get("/logs")
 def get_logs():
@@ -32,9 +76,17 @@ def get_logs():
         logs = []
         for doc in docs:
             data = doc.to_dict()
+            data["id"] = doc.id
             # Convert timestamp to str
+            # Convert timestamp to ISO str
             if "timestamp" in data and data["timestamp"]:
-                data["timestamp"] = str(data["timestamp"])
+                ts = data["timestamp"]
+                # Firestore timestamp object usually has .isoformat() or similar if read via firebase-admin
+                # But it might be a datetime object.
+                if hasattr(ts, 'isoformat'):
+                    data["timestamp"] = ts.isoformat()
+                else:
+                    data["timestamp"] = str(ts)
             logs.append(data)
         return logs
     except Exception as e:

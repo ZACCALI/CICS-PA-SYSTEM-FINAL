@@ -11,7 +11,7 @@ import {
   browserLocalPersistence,
   browserSessionPersistence
 } from "firebase/auth";
-import { doc, setDoc, getDoc, updateDoc, onSnapshot } from "firebase/firestore";
+import { doc, setDoc, getDoc, updateDoc, onSnapshot, addDoc, collection, serverTimestamp } from "firebase/firestore";
 import { auth, db } from '../firebase';
 import api from '../api/axios';
 
@@ -140,24 +140,39 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
-    // Optimistic Clear - Stops UI bounce immediately
-    setCurrentUser(null);
-    setUserData(null);
-
     const user = auth.currentUser;
     if (user) {
-        // Fire and forget status update (don't block UI)
         try {
-            updateDoc(doc(db, "users", user.uid), {
-                isOnline: false,
-                lastLogin: new Date().toISOString()
-            }).catch(err => console.error("Offline status sync failed", err));
+            // 1. Set offline
+            await updateDoc(doc(db, "users", user.uid), {
+                isOnline: false
+            });
+
+            // 2. Log Logout Activity - REMOVED per request
+            /*
+            const userName = user.displayName || user.email || 'Unknown User';
+            try {
+                await addDoc(collection(db, "logs"), {
+                    user: userName,
+                    action: 'Logged Out',
+                    type: 'Session',
+                    details: `${userName} logged out of the system.`,
+                    timestamp: serverTimestamp()
+                });
+            } catch (logErr) {
+                console.error("Failed to log logout:", logErr);
+            }
+            */
+
         } catch (e) {
-            // Ignore synchronous errors
+            console.error("Logout cleanup failed", e);
         }
     }
-    // Always sign out locally
-    return signOut(auth);
+    // 3. Sign Out
+    await signOut(auth);
+    
+    // 4. Force Reload/Redirect to ensure clean state
+    window.location.href = '/'; 
   };
 
   // Admin Methods - Now calling Backend API
@@ -235,6 +250,20 @@ export const AuthProvider = ({ children }) => {
       }
   };
 
+  // Special Admin Update (Bypasses Auth restrictions via Backend)
+  const adminUpdateProfile = async (data) => {
+      try {
+          await api.put('/account/profile', data);
+          // Manually update local state since Auth/Firestore listeners might lag slightly
+          // or if we changed email, we want UI to reflect it immediately
+          setCurrentUser(prev => ({ ...prev, ...data }));
+          return true;
+      } catch (e) {
+          console.error("Admin update failed:", e);
+          throw e; // Rethrow to show error in UI
+      }
+  };
+
   const value = {
     currentUser,
     loading,
@@ -242,6 +271,7 @@ export const AuthProvider = ({ children }) => {
     signup,
     logout,
     updateUser, // Restored
+    adminUpdateProfile, // New
     getAllUsers, 
     adminCreateUser,
     adminApproveUser,

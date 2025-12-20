@@ -1,14 +1,28 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
+import { useAuth } from '../../context/AuthContext';
 import Modal from '../common/Modal';
 
 const Upload = () => {
-  const { files, addFile, deleteFile } = useApp();
+  const { files, addFile, deleteFile, logActivity, updateLog } = useApp();
+  const { currentUser } = useAuth();
   const fileInputRef = useRef(null);
   
   // Audio Playback
   const [playingId, setPlayingId] = useState(null);
+  const [currentLogId, setCurrentLogId] = useState(null); // Track session log
   const audioRef = useRef(new Audio());
+  const startTimeRef = useRef(null);
+  
+  useEffect(() => {
+      // Cleanup on unmount
+      return () => {
+          if (audioRef.current) {
+              audioRef.current.pause();
+              audioRef.current.src = "";
+          }
+      };
+  }, []);
   
   // Modal
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -18,14 +32,20 @@ const Upload = () => {
 
   const handleFileChange = (e) => {
       const selectedFiles = Array.from(e.target.files);
-      
+      const newFiles = [];
+      const batchNames = new Set(); // Track names in current batch
+
       selectedFiles.forEach(file => {
-          // CHECK DUPLICATION
-          if (files.some(f => f.name === file.name)) {
-              setErrorMessage(`File "${file.name}" already exists.`);
-              setShowErrorModal(true);
+          // CHECK DUPLICATION (Existing + Current Batch)
+          if (files.some(f => f.name === file.name) || batchNames.has(file.name)) {
+              if (!errorMessage) { // Only show error for first duplicate to avoid spam
+                   setErrorMessage(`File "${file.name}" already exists or was selected twice.`);
+                   setShowErrorModal(true);
+              }
               return;
           }
+
+          batchNames.add(file.name);
 
           // Use FileReader to store actual content
           const reader = new FileReader();
@@ -44,41 +64,103 @@ const Upload = () => {
       });
       // Reset
       e.target.value = '';
+      setErrorMessage(''); // Clear previous errors if any (though modal handles display)
   };
 
-  const playSound = (id) => {
+  const playSound = async (id) => {
       const fileToPlay = files.find(f => f.id === id);
       if (!fileToPlay) return;
 
       if (playingId === id) {
-          // Is currently playing this one, so pause
+          // STOP
           audioRef.current.pause();
           setPlayingId(null);
+          
+          if (currentLogId) {
+             const durationSec = Math.round((Date.now() - startTimeRef.current) / 1000);
+             const endTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+             
+             updateLog(currentLogId, {
+                 action: 'Music Session',
+                 details: `${fileToPlay.name} (Start: ${startTimeStrRef.current} - End: ${endTimeStr})`
+             });
+             setCurrentLogId(null);
+          }
       } else {
-          // Play new one
+          // PLAY NEW (Stop previous first if any)
           if (!audioRef.current.paused) {
                audioRef.current.pause();
+               // Update previous log
+               if (currentLogId) {
+                   const durationSec = Math.round((Date.now() - startTimeRef.current) / 1000);
+                   const endTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                   
+                   updateLog(currentLogId, {
+                       action: 'Music Session',
+                       details: `Music Session (Start: ${startTimeStrRef.current} - End: ${endTimeStr})`
+                   });
+                   setCurrentLogId(null);
+               }
           }
            
-           // Set src to stored base64 content
            if (fileToPlay.content) {
                audioRef.current.src = fileToPlay.content;
            } else {
-               // Fallback if no content (old mock data?)
                console.warn("No audio content found for file");
                return; 
            }
            
-           // Play
-           audioRef.current.play().then(() => {
+           try {
+               await audioRef.current.play();
                setPlayingId(id);
-               // Removed timeout auto-stop to allow full song play as requested
-           }).catch(e => console.error(e));
+               startTimeRef.current = Date.now();
+               startTimeStrRef.current = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+               
+               // Start Log
+               const logId = await logActivity(currentUser?.name || 'Admin', 'Started Audio Playback', 'Music', `Playing file: ${fileToPlay.name}...`);
+               setCurrentLogId(logId);
+               
+           } catch (e) { console.error(e); }
            
            // Handle end event
-           audioRef.current.onended = () => setPlayingId(null);
+           audioRef.current.onended = () => {
+               setPlayingId(null);
+               if (currentLogId) { // Use ref value if closure issue? No, component state might be stale in callback?
+                   // Ideally use ref for logId too.
+               }
+               // We need the *latest* logId. 
+               // State in callback is closed over.
+               // Let's rely on manually stopping or just auto-update?
+               // The callback closes over `currentLogId` as it was when registered? No.
+               // We need a ref for logId to use in onended.
+           };
       }
   };
+  
+  // Ref for log ID to access in onended
+  const logIdRef = useRef(null);
+  useEffect(() => { logIdRef.current = currentLogId; }, [currentLogId]);
+
+  // Ref for readable start time
+  const startTimeStrRef = useRef('');
+
+  // Update onended logic separately to use Ref
+  useEffect(() => {
+      const handleEnded = () => {
+          setPlayingId(null);
+          if (logIdRef.current) {
+               const durationSec = Math.round((Date.now() - startTimeRef.current) / 1000);
+               const endTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+               
+               updateLog(logIdRef.current, {
+                   action: 'Music Session',
+                   details: `Music Session (Start: ${startTimeStrRef.current} - End: ${endTimeStr})`
+               });
+               setCurrentLogId(null);
+          }
+      };
+      audioRef.current.onended = handleEnded;
+  }, [files]); // Re-attach if files change, but actually just once is fine if we use refs.
 
   const confirmDelete = (file) => {
       setFileToDelete(file);
@@ -92,6 +174,14 @@ const Upload = () => {
           if (playingId === fileToDelete.id) {
               audioRef.current.pause();
               setPlayingId(null);
+              if (currentLogId) {
+                  const endTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  updateLog(currentLogId, {
+                      action: 'Music Session',
+                      details: `${fileToDelete.name} (Start: ${startTimeStrRef.current} - End: ${endTimeStr})`
+                  });
+                  setCurrentLogId(null);
+              }
           }
           setShowDeleteModal(false);
           setFileToDelete(null);

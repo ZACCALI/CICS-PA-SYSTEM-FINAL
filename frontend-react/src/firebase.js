@@ -3,12 +3,12 @@ import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyB3odZ0rXs3fQdqQCJzbgSjKbU_ZX7yaHY",
-  authDomain: "cics-pa-system-b131c.firebaseapp.com",
-  projectId: "cics-pa-system-b131c",
-  storageBucket: "cics-pa-system-b131c.firebasestorage.app",
-  messagingSenderId: "1094836529930",
-  appId: "1:1094836529930:web:f40033820124878a0de8f3"
+  apiKey: "AIzaSyBTPcqqCQgKc5Sfyr9elbbCONiINMlZRiM",
+  authDomain: "cics-pa-system-v2.firebaseapp.com",
+  projectId: "cics-pa-system-v2",
+  storageBucket: "cics-pa-system-v2.firebasestorage.app",
+  messagingSenderId: "577784873184",
+  appId: "1:577784873184:web:1c4e6d87a5178ef9961085"
 };
 
 const app = initializeApp(firebaseConfig);

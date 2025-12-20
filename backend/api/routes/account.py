@@ -6,6 +6,8 @@ import datetime
 
 manage_account_router = APIRouter(prefix="/account", tags=["account"])
 
+from firebase_admin import firestore
+
 @manage_account_router.get("/")
 def get_users(admin_user: dict = Depends(verify_admin)):
     """
@@ -56,6 +58,15 @@ def create_user(user: CreateUserRequest, admin_user: dict = Depends(verify_admin
         }
         db.collection("users").document(auth_user.uid).set(new_user_doc)
         
+        # Log
+        db.collection("logs").add({
+            "user": "Admin", # Admin action
+            "action": "User Created",
+            "type": "Account",
+            "details": f"Created user: {user.email} ({user.role})",
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+        
         return {"message": f"User {user.email} created successfully", "uid": auth_user.uid}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
@@ -72,7 +83,25 @@ def approve_user(uid: str, admin_user: dict = Depends(verify_admin)):
         if not user_doc.exists:
             raise HTTPException(status_code=404, detail="User not found")
         
-        user_ref.update({"status": "approved"})
+        # Get user details for log
+        user_data = user_doc.to_dict()
+        user_email = user_data.get('email', 'Unknown')
+        
+        user_ref.update({
+            "status": "approved",
+            "isOnline": True, # Auto-online for immediate badge visibility
+            "lastLogin": datetime.datetime.now().isoformat() # Set lastLogin to now
+        })
+        
+        # Log
+        db.collection("logs").add({
+            "user": "Admin",
+            "action": "User Approved",
+            "type": "Account",
+            "details": f"Approved user: {user_email}",
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+        
         return {"message": f"User {uid} approved successfully"}
     except HTTPException:
         raise
@@ -86,12 +115,23 @@ def reset_user(uid: str, admin_user: dict = Depends(verify_admin)):
     Protected: Admin only.
     """
     try:
+        # Get user details for log
+        user_doc = db.collection("users").document(uid).get()
+        user_email = "Unknown"
+        if user_doc.exists:
+             user_email = user_doc.to_dict().get('email', 'Unknown')
+
         # 1. Reset Password in Firebase Auth
         auth.update_user(uid, password="12345678")
         
-        # 2. Update status in Firestore if needed (optional based on requirement)
-        # user_ref = db.collection("users").document(uid)
-        # user_ref.update({"status": "pending"}) 
+        # Log
+        db.collection("logs").add({
+            "user": "Admin",
+            "action": "Password Reset",
+            "type": "Account",
+            "details": f"Reset password for: {user_email}",
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
         
         return {"message": f"User {uid} password reset to 12345678 successfully"}
     except HTTPException:
@@ -106,6 +146,12 @@ def delete_user(uid: str, admin_user: dict = Depends(verify_admin)):
     Protected: Admin only.
     """
     try:
+        # Get user details for log before deletion
+        user_doc = db.collection("users").document(uid).get()
+        user_email = "Unknown"
+        if user_doc.exists:
+             user_email = user_doc.to_dict().get('email', 'Unknown')
+
         # 1. Delete from Firestore
         db.collection("users").document(uid).delete()
         
@@ -115,7 +161,63 @@ def delete_user(uid: str, admin_user: dict = Depends(verify_admin)):
         except auth.UserNotFoundError:
             # If user not in Auth but in Firestore, we proceed
             pass
+        
+        # Log
+        db.collection("logs").add({
+            "user": "Admin",
+            "action": "User Deleted",
+            "type": "Account",
+            "details": f"Deleted user: {user_email}",
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
             
         return {"message": f"User {uid} deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete user: {str(e)}")
+
+class UpdateAdminProfileRequest(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    password: str | None = None
+    avatar: str | None = None
+
+@manage_account_router.put("/profile")
+def update_admin_profile(data: UpdateAdminProfileRequest, admin_user: dict = Depends(verify_admin)):
+    """
+    Update Admin Profile (Name, Email, Password) directly via Admin SDK.
+    Bypasses 'Recent Login' requirement of client SDKs.
+    Protected: Admin only.
+    """
+    uid = admin_user['uid']
+    try:
+        updates = {}
+        # 1. Update Authentication (Email, Password, Name)
+        auth_updates = {}
+        if data.email: auth_updates['email'] = data.email
+        if data.password: auth_updates['password'] = data.password
+        if data.name: auth_updates['display_name'] = data.name
+        
+        if auth_updates:
+            auth.update_user(uid, **auth_updates)
+
+        # 2. Update Firestore
+        firestore_updates = {}
+        if data.name: firestore_updates['name'] = data.name
+        if data.email: firestore_updates['email'] = data.email
+        if data.avatar: firestore_updates['avatar'] = data.avatar
+        
+        if firestore_updates:
+            db.collection("users").document(uid).update(firestore_updates)
+            
+        # Log
+        db.collection("logs").add({
+            "user": "Admin",
+            "action": "Profile Updated",
+            "type": "System",
+            "details": f"System Administrator updated their profile/credentials.",
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+
+        return {"message": "Admin profile updated successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update admin profile: {str(e)}")

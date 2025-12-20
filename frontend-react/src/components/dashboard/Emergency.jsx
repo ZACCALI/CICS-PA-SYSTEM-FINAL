@@ -22,8 +22,10 @@ const Emergency = () => {
           oscillator = audioCtx.createOscillator();
           gainNode = audioCtx.createGain();
 
-          oscillator.type = 'sawtooth';
+          oscillator.type = 'sine';
           oscillator.frequency.value = 800; // Start freq
+          
+          gainNode.gain.value = 0.3; // Reduce volume to 30% to protect PAM8610
           
           oscillator.connect(gainNode);
           gainNode.connect(audioCtx.destination);
@@ -50,7 +52,6 @@ const Emergency = () => {
   const handleActivate = () => {
     setShowConfirm(false);
     toggleEmergency(currentUser?.name || 'Admin', 'ACTIVATED');
-    logActivity(currentUser?.name || 'Admin', 'Activated Emergency', 'Emergency', 'Emergency Alert Triggered for All Zones');
   };
 
   return (
@@ -78,7 +79,6 @@ const Emergency = () => {
                     <button 
                         onClick={() => {
                             toggleEmergency(currentUser?.name || 'Admin', 'DEACTIVATED');
-                            logActivity(currentUser?.name || 'Admin', 'Deactivated Emergency', 'Emergency', 'Emergency Alert Halted');
                         }}
                         className="bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 px-8 rounded-lg shadow-lg transform transition hover:scale-105 flex items-center"
                     >
@@ -102,8 +102,8 @@ const Emergency = () => {
               <h3 className="text-lg font-semibold text-gray-700 flex items-center">
                 <i className="material-icons mr-2">history</i> Emergency History
               </h3>
-              {emergencyHistory.length > 0 && (
-                  <button onClick={clearEmergencyHistory} className="text-xs text-red-500 hover:text-red-700 font-medium hover:underline">
+              {emergencyHistory.filter(item => item.user === currentUser?.name).length > 0 && (
+                  <button onClick={() => clearEmergencyHistory(currentUser?.name)} className="text-xs text-red-500 hover:text-red-700 font-medium hover:underline">
                       Clear History
                   </button>
               )}
@@ -111,7 +111,7 @@ const Emergency = () => {
           
           {emergencyHistory.length > 0 ? (
               <div className="space-y-4">
-                  {emergencyHistory.map((item) => (
+                  {emergencyHistory.filter(item => item.user === currentUser?.name).map((item) => (
                       <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border-l-4 border-red-400">
                           <div>
                               <p className="font-bold text-gray-800 text-sm">{item.action}</p>

@@ -9,3 +9,9 @@ coverage
 backend/serviceAccountKey.json
 serviceAccountKey.json
 *.pem
+
+# Python
+.venv
+venv
+__pycache__
+*.pyc

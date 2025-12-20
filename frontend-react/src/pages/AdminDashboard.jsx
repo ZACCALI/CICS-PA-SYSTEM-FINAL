@@ -28,17 +28,7 @@ const AdminDashboard = () => {
   const totalAnnouncements = schedules.length;
   const pendingAnnouncements = schedules.filter(s => s.status === 'Pending').length;
 
-  const renderContent = () => {
-    switch(activeSection) {
-      case 'realtime': return <RealTime />;
-      case 'schedule': return <Schedule />;
-      case 'emergency': return <Emergency />;
-      case 'history': return <HistoryLogs />;
-      case 'upload': return <Upload />;
-      case 'manage-account': return <ManageAccount />;
-      default: return <RealTime />;
-    }
-  };
+
 
   return (
     <DashboardLayout 
@@ -91,7 +81,24 @@ const AdminDashboard = () => {
 
         {/* Content Area */}
         <div className="transition-all duration-300">
-          {renderContent()}
+          <div className={activeSection === 'realtime' ? 'block' : 'hidden'}>
+            <RealTime />
+          </div>
+          <div className={activeSection === 'schedule' ? 'block' : 'hidden'}>
+            <Schedule />
+          </div>
+          <div className={activeSection === 'emergency' ? 'block' : 'hidden'}>
+            <Emergency />
+          </div>
+          <div className={activeSection === 'history' ? 'block' : 'hidden'}>
+            <HistoryLogs />
+          </div>
+          <div className={activeSection === 'upload' ? 'block' : 'hidden'}>
+            <Upload />
+          </div>
+          <div className={activeSection === 'manage-account' ? 'block' : 'hidden'}>
+            <ManageAccount />
+          </div>
         </div>
       </div>
     </DashboardLayout>
