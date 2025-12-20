@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import Modal from '../common/Modal';
 
 const Schedule = () => {
-  const { schedules, addSchedule, updateSchedule, deleteSchedule, logActivity } = useApp();
+  const { schedules, addSchedule, updateSchedule, deleteSchedule, logActivity, emergencyActive, broadcastActive } = useApp();
   const { currentUser } = useAuth();
   const [activeTab, setActiveTab] = useState('pending');
   
@@ -77,6 +77,30 @@ const Schedule = () => {
           }
       };
   }, []);
+
+  // Priority Enforcement: Stop playback if Emergency or Broadcast starts
+  useEffect(() => {
+    if (emergencyActive || broadcastActive) {
+        // Stop any audio previews or recording
+        if (isRecording) {
+            // Cancel recording
+             if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+                mediaRecorderRef.current.stop();
+            }
+            if (recognitionRef.current) {
+                recognitionRef.current.stop();
+            }
+            setIsRecording(false);
+            setInfoMessage("Action interrupted by higher priority broadcast.");
+            setShowInfoModal(true);
+        }
+        
+        // Note: Actual scheduled "playback" (if simulated by frontend audio) would be stopped here too.
+        // Currently Schedule.jsx mainly handles CREATION. 
+        // If there is an audio player for previewing uploaded files (audioBlob), we should stop it.
+        // (Assuming simple browser audio player might be used elsewhere, or just the recording preview?)
+    }
+  }, [emergencyActive, broadcastActive, isRecording]);
 
   const handleZoneChange = (zone) => {
     if (zone === 'All Zones') {

@@ -48,6 +48,15 @@ export const AppProvider = ({ children }) => {
             const data = docSnap.data();
             setEmergencyActive(data.active);
             setEmergencyHistory(data.history || []);
+            
+            // REACTIVE INTERRUPTION:
+            if (data.active) {
+                // Emergency just turned on (or is on).
+                // Force stop all other audio.
+                // We can't call stopAllAudio directly if it's defined below?
+                // It is defined below. We need to move stopAllAudio up or use a ref/effect.
+                // Better: Use a separate useEffect to watch 'emergencyActive' state change.
+            }
         } else {
             setEmergencyActive(false);
             setEmergencyHistory([]);
@@ -102,6 +111,14 @@ export const AppProvider = ({ children }) => {
         unsubLogs();
     };
   }, []);
+
+  // 4. Reactive Priority Enforcement
+  useEffect(() => {
+    if (emergencyActive) {
+        // Emergency Override: Stop everything else.
+        stopAllAudio();
+    }
+  }, [emergencyActive]);
 
   // Removed manual fetchSchedules as it is now real-time
 
@@ -218,6 +235,9 @@ export const AppProvider = ({ children }) => {
           }
       } catch (e) {
           console.error("Log failed", e);
+          if (e.response && e.response.status === 409) {
+              return { error: 'CONFLICT' };
+          }
       }
       return null;
   };

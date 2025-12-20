@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import Modal from '../common/Modal';
 
 const RealTime = () => {
-  const { addSchedule, logActivity, updateLog, broadcastActive, startBroadcast, stopBroadcast, broadcastStream, zones, setZones } = useApp();
+  const { addSchedule, logActivity, updateLog, broadcastActive, startBroadcast, stopBroadcast, broadcastStream, zones, setZones, emergencyActive } = useApp();
   const { currentUser } = useAuth();
   const [currentLogId, setCurrentLogId] = useState(null); // Track session log
   
@@ -157,7 +157,13 @@ const RealTime = () => {
         } else {
              // Fallback
              logActivity(currentUser?.name, 'Stopped Voice Broadcast', 'Voice', 'Microphone deactivated');
-        }
+        return;
+    }
+    
+    // Priority Check
+    if (emergencyActive) {
+        setModalMessage("Cannot broadcast during an active EMERGENCY.");
+        setShowModal(true);
         return;
     }
 
@@ -172,8 +178,17 @@ const RealTime = () => {
         startTimeRef.current = Date.now();
         startTimeStrRef.current = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         
-        const logId = await logActivity(currentUser?.name, 'Active Voice Broadcast', 'Voice', 'Microphone is active...');
-        setCurrentLogId(logId);
+        const logRes = await logActivity(currentUser?.name, 'Active Voice Broadcast', 'Voice', 'Microphone is active...');
+        
+        if (logRes && logRes.error === 'CONFLICT') {
+             // Backend blocked us (race condition or late sync)
+             stopBroadcast();
+             setModalMessage("Broadcast denied by System (Emergency Active).");
+             setShowModal(true);
+             return;
+        }
+
+        setCurrentLogId(logRes);
     } else {
         setModalMessage("Could not access microphone.");
         setShowModal(true);

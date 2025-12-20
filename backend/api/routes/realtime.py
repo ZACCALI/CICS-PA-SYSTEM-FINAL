@@ -1,23 +1,40 @@
+
 from fastapi import APIRouter, HTTPException
 from api.firebaseConfig import db
 from pydantic import BaseModel
+from api.services.pa_controller import pa_system
+from firebase_admin import firestore
 
 real_time_announcements_router = APIRouter(prefix="/realtime", tags=["realtime"])
 
-class BroadcastAction(BaseModel):
+class BroadcastLog(BaseModel):
     user: str
-    type: str # 'voice' or 'text'
-    action: str # 'START', 'STOP', 'MESSAGE'
+    type: str  # Voice, Text, Music
+    action: str # Started, Stopped
     details: str
 
 @real_time_announcements_router.post("/log")
-def log_broadcast(action: BroadcastAction):
+def log_broadcast(log: BroadcastLog):
     try:
-        # Just log to a 'logs' collection in Firestore
-        log_entry = action.dict()
-        log_entry["timestamp"] = firestore_server_timestamp()
-        # Add and get ref
-        update_time, doc_ref = db.collection("logs").add(log_entry)
+        # PA Logic Integration
+        if log.action.lower() == "started":
+            success = pa_system.start_realtime(log.user, log.details)
+            if not success:
+                # Blocked by emergency
+                raise HTTPException(status_code=409, detail="System is in Emergency mode. Realtime broadcast denied.")
+
+        elif log.action.lower() == "stopped":
+            pa_system.stop_realtime()
+
+        # Firestore Logging (Keep existing)
+        new_log = {
+            'user': log.user,
+            'type': log.type,
+            'action': log.action,
+            'details': log.details,
+            'timestamp': firestore.SERVER_TIMESTAMP
+        }
+        update_time, doc_ref = db.collection("logs").add(new_log)
         return {"message": "Logged successfully", "id": doc_ref.id}
     except Exception as e:
         # Don't fail the request if logging fails, just print

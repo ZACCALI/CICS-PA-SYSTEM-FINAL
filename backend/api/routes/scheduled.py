@@ -3,6 +3,7 @@ from api.firebaseConfig import db
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
 from firebase_admin import firestore
+from api.services.pa_controller import pa_system
 
 scheduled_announcements_router = APIRouter(prefix="/scheduled", tags=["scheduled"])
 
@@ -44,25 +45,28 @@ def create_schedule(schedule: dict):
             if field not in schedule or not schedule[field]:
                  raise HTTPException(status_code=400, detail=f"Missing field: {field}")
 
-        # Store in Firestore
-        if "id" in schedule:
-            del schedule["id"] 
-            
-        _, doc_ref = db.collection("schedules").add(schedule)
+        # Add to Firestore
+        doc_ref = db.collection('schedules').document()
+        schedule['id'] = doc_ref.id
+        # schedule['status'] = 'Pending' # frontend sends this
+        doc_ref.set(schedule)
         
-        # Log 
-        user_name = schedule.get("user", "Admin") # Use passed user or default
-        db.collection("logs").add({
-            "user": user_name,
-            "action": "Schedule Created",
-            "type": "Schedule",
-            "details": f"Scheduled: {schedule.get('message', 'No message')}",
-            "timestamp": firestore.SERVER_TIMESTAMP
+        # Log Logic
+        log_ref = db.collection('logs')
+        log_ref.add({
+            'user': schedule.get('user', 'Unknown'),
+            'action': "Schedule Created",
+            'type': "Schedule",
+            'details': f"Scheduled: {schedule.get('message')}",
+            'timestamp': firestore.SERVER_TIMESTAMP
         })
+        
+        # PA Logic: Add to active queue
+        # Note: In a real app, we'd have a scheduler loop picking this up from DB.
+        # Here we directly inject it for the "Queue Logic" demo.
+        pa_system.add_schedule(schedule)
 
-        return {"id": doc_ref.id, "message": "Schedule created"}
-    except HTTPException as he:
-        raise he
+        return {"status": "success", "id": doc_ref.id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create schedule: {str(e)}")
 
