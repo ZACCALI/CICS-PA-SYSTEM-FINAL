@@ -10,13 +10,18 @@ import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 
 const AdminDashboard = () => {
-  const [activeSection, setActiveSection] = useState('realtime');
+  // Persist active tab
+  const [activeSection, setActiveSection] = useState(() => {
+    return localStorage.getItem('admin_active_section') || 'realtime';
+  });
   const { currentUser: user } = useAuth(); 
   const { schedules } = useApp();
 
   useEffect(() => {
-    // Session storage logic removed
+    localStorage.setItem('admin_active_section', activeSection);
+  }, [activeSection]);
 
+  useEffect(() => {
     const handleNavChange = (e) => {
         if (e.detail) setActiveSection(e.detail);
     };
@@ -25,8 +30,9 @@ const AdminDashboard = () => {
     return () => window.removeEventListener('nav-change', handleNavChange);
   }, []);
 
-  const totalAnnouncements = schedules.length;
-  const pendingAnnouncements = schedules.filter(s => s.status === 'Pending').length;
+  const mySchedules = schedules.filter(s => s.user === user?.name);
+  const totalAnnouncements = mySchedules.length;
+  const pendingAnnouncements = mySchedules.filter(s => s.status === 'Pending').length;
 
 
 

@@ -1,45 +1,118 @@
-
 from fastapi import APIRouter, HTTPException
-from api.firebaseConfig import db
+from typing import Optional, List
 from pydantic import BaseModel
-from api.services.pa_controller import pa_system
-from firebase_admin import firestore
+from api.firebaseConfig import db, firestore_server_timestamp
+from api.controller import controller, Task, TaskType, Priority
 
-real_time_announcements_router = APIRouter(prefix="/realtime", tags=["realtime"])
+real_time_announcements_router = APIRouter(
+    prefix="/realtime",
+    tags=["Real Time Announcements"]
+)
 
-class BroadcastLog(BaseModel):
+class BroadcastRequest(BaseModel):
     user: str
-    type: str  # Voice, Text, Music
-    action: str # Started, Stopped
+    zones: List[str]
+    type: str = "voice" # 'voice' or 'text'
+    content: Optional[str] = None # Text content or encoded metadata
+
+class BroadcastAction(BaseModel):
+    user: str
+    type: str # 'voice' or 'text'
+    action: str # 'START', 'STOP', 'MESSAGE'
     details: str
+    timestamp: Optional[str] = None
+
+@real_time_announcements_router.post("/start")
+def start_broadcast(req: BroadcastRequest):
+    """
+    Request to start a Live Broadcast (Voice or Text) or Background Audio.
+    Verified by PA Controller.
+    """
+    # Determine Priority and Type
+    if req.type == 'background':
+        task_type = TaskType.BACKGROUND
+        priority = Priority.BACKGROUND
+    elif req.type == 'voice':
+        task_type = TaskType.VOICE
+        priority = Priority.REALTIME
+    else:
+        task_type = TaskType.TEXT
+        priority = Priority.REALTIME
+
+    task = Task(
+        type=task_type,
+        priority=priority,
+        data={
+            "user": req.user,
+            "zones": req.zones,
+            "content": req.content
+        }
+    )
+    
+    success = controller.request_playback(task)
+    if not success:
+        raise HTTPException(status_code=409, detail="System Busy or Higher Priority Active")
+    
+    return {"message": "Broadcast Started", "task_id": task.id}
+
+@real_time_announcements_router.post("/stop")
+def stop_broadcast(user: str, type: str = "voice", task_id: Optional[str] = None): 
+    """
+    Request to stop the current broadcast.
+    Type can be 'voice', 'text', 'background'
+    """
+    target_type = TaskType.VOICE
+    if type == 'background':
+        target_type = TaskType.BACKGROUND
+    elif type == 'text':
+        target_type = TaskType.TEXT
+    
+    controller.stop_task(task_id, task_type=target_type)
+    return {"message": "Broadcast Stopped"}
+
+class CompleteRequest(BaseModel):
+    task_id: str
+
+@real_time_announcements_router.post("/complete")
+def complete_task(req: CompleteRequest):
+    """
+    Signal that a task (e.g. Schedule playback) has finished.
+    """
+    controller.stop_task(req.task_id)
+    return {"message": "Task Completed"}
 
 @real_time_announcements_router.post("/log")
-def log_broadcast(log: BroadcastLog):
+def log_broadcast(action: BroadcastAction):
+    # Log history only
     try:
-        # PA Logic Integration
-        if log.action.lower() == "started":
-            success = pa_system.start_realtime(log.user, log.details)
-            if not success:
-                # Blocked by emergency
-                raise HTTPException(status_code=409, detail="System is in Emergency mode. Realtime broadcast denied.")
-
-        elif log.action.lower() == "stopped":
-            pa_system.stop_realtime()
-
-        # Firestore Logging (Keep existing)
-        new_log = {
-            'user': log.user,
-            'type': log.type,
-            'action': log.action,
-            'details': log.details,
-            'timestamp': firestore.SERVER_TIMESTAMP
-        }
-        update_time, doc_ref = db.collection("logs").add(new_log)
+        log_entry = action.dict()
+        log_entry["timestamp"] = firestore_server_timestamp()
+        update_time, doc_ref = db.collection("logs").add(log_entry)
         return {"message": "Logged successfully", "id": doc_ref.id}
     except Exception as e:
-        # Don't fail the request if logging fails, just print
         print(f"Logging failed: {e}")
         return {"message": "Logged (fallback)", "id": None}
+
+@real_time_announcements_router.get("/logs")
+def get_logs():
+    try:
+        from firebase_admin import firestore
+        docs = db.collection("logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).stream()
+        logs = []
+        for doc in docs:
+            data = doc.to_dict()
+            data["id"] = doc.id
+            if "timestamp" in data and data["timestamp"]:
+                ts = data["timestamp"]
+                if hasattr(ts, 'isoformat'):
+                    data["timestamp"] = ts.isoformat()
+                else:
+                    data["timestamp"] = str(ts)
+            logs.append(data)
+        return logs
+    except Exception as e:
+        print(f"Fetch logs failed: {e}")
+        return []
 
 class LogUpdate(BaseModel):
     action: str = None
@@ -51,65 +124,17 @@ def update_log(log_id: str, update: LogUpdate):
         doc_ref = db.collection("logs").document(log_id)
         if not doc_ref.get().exists:
             raise HTTPException(status_code=404, detail="Log not found")
-        
-        # Only update provided fields
         fields_to_update = {k: v for k, v in update.dict().items() if v is not None}
         if fields_to_update:
             doc_ref.update(fields_to_update)
-            
         return {"message": "Log updated successfully"}
     except Exception as e:
-         print(f"Update log failed: {e}")
          raise HTTPException(status_code=500, detail=str(e))
-
+         
 @real_time_announcements_router.delete("/log/{log_id}")
-def delete_log(log_id: str, user: str = "Admin"):
+def delete_log(log_id: str):
     try:
-        # Fetch the target log first
-        doc_ref = db.collection("logs").document(log_id)
-        doc_snap = doc_ref.get()
-        
-        if not doc_snap.exists:
-             raise HTTPException(status_code=404, detail="Log not found")
-             
-        log_data = doc_snap.to_dict()
-        
-        # Delete the target log
-        doc_ref.delete()
-        
+        db.collection("logs").document(log_id).delete()
         return {"message": "Log deleted successfully"}
     except Exception as e:
-        # Re-raise HTTP exceptions directly
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=f"Failed to delete log: {str(e)}")
-
-@real_time_announcements_router.get("/logs")
-def get_logs():
-    try:
-        from firebase_admin import firestore
-        # Order by timestamp desc
-        docs = db.collection("logs").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(50).stream()
-        logs = []
-        for doc in docs:
-            data = doc.to_dict()
-            data["id"] = doc.id
-            # Convert timestamp to str
-            # Convert timestamp to ISO str
-            if "timestamp" in data and data["timestamp"]:
-                ts = data["timestamp"]
-                # Firestore timestamp object usually has .isoformat() or similar if read via firebase-admin
-                # But it might be a datetime object.
-                if hasattr(ts, 'isoformat'):
-                    data["timestamp"] = ts.isoformat()
-                else:
-                    data["timestamp"] = str(ts)
-            logs.append(data)
-        return logs
-    except Exception as e:
-        print(f"Fetch logs failed: {e}")
-        return []
-
-def firestore_server_timestamp():
-    from firebase_admin import firestore
-    return firestore.SERVER_TIMESTAMP
+        raise HTTPException(status_code=500, detail=str(e))

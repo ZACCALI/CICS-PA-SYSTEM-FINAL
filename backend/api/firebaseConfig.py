@@ -19,3 +19,7 @@ if not firebase_admin._apps:
 db = firestore.client()
 # auth is the module itself, exported for convenience if needed, 
 # but usually accessed via firebase_admin.auth directly in other files.
+
+def firestore_server_timestamp():
+    return firestore.SERVER_TIMESTAMP
+

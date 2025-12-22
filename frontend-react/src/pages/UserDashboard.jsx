@@ -9,7 +9,10 @@ import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 
 const UserDashboard = () => {
-  const [activeSection, setActiveSection] = useState('realtime');
+  // Persist active tab
+  const [activeSection, setActiveSection] = useState(() => {
+     return localStorage.getItem('user_active_section') || 'realtime';
+  });
   const { currentUser: user } = useAuth();
   const { schedules } = useApp();
 
@@ -19,8 +22,10 @@ const UserDashboard = () => {
   const pendingAnnouncements = mySchedules.filter(s => s.status === 'Pending').length;
 
   useEffect(() => {
-    // Session storage logic removed
+     localStorage.setItem('user_active_section', activeSection);
+  }, [activeSection]);
 
+  useEffect(() => {
     const handleNavChange = (e) => {
         if (e.detail) setActiveSection(e.detail);
     };

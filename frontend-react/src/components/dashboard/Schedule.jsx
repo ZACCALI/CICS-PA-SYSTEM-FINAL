@@ -4,7 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import Modal from '../common/Modal';
 
 const Schedule = () => {
-  const { schedules, addSchedule, updateSchedule, deleteSchedule, logActivity, emergencyActive, broadcastActive } = useApp();
+  const { schedules, addSchedule, updateSchedule, deleteSchedule, logActivity } = useApp();
   const { currentUser } = useAuth();
   const [activeTab, setActiveTab] = useState('pending');
   
@@ -23,6 +23,7 @@ const Schedule = () => {
   const [audioBlob, setAudioBlob] = useState(null);
   const mediaRecorderRef = useRef(null);
   const recognitionRef = useRef(null);
+  const audioPreviewRef = useRef(null); // Ref for audio element
   const [interimText, setInterimText] = useState('');
   
   const [formData, setFormData] = useState({
@@ -78,29 +79,16 @@ const Schedule = () => {
       };
   }, []);
 
-  // Priority Enforcement: Stop playback if Emergency or Broadcast starts
+  // Global Audio Stop Listener
   useEffect(() => {
-    if (emergencyActive || broadcastActive) {
-        // Stop any audio previews or recording
-        if (isRecording) {
-            // Cancel recording
-             if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-                mediaRecorderRef.current.stop();
-            }
-            if (recognitionRef.current) {
-                recognitionRef.current.stop();
-            }
-            setIsRecording(false);
-            setInfoMessage("Action interrupted by higher priority broadcast.");
-            setShowInfoModal(true);
-        }
-        
-        // Note: Actual scheduled "playback" (if simulated by frontend audio) would be stopped here too.
-        // Currently Schedule.jsx mainly handles CREATION. 
-        // If there is an audio player for previewing uploaded files (audioBlob), we should stop it.
-        // (Assuming simple browser audio player might be used elsewhere, or just the recording preview?)
-    }
-  }, [emergencyActive, broadcastActive, isRecording]);
+      const handleStop = () => {
+          if (audioPreviewRef.current) {
+              audioPreviewRef.current.pause();
+          }
+      };
+      window.addEventListener('stop-all-audio', handleStop);
+      return () => window.removeEventListener('stop-all-audio', handleStop);
+  }, []);
 
   const handleZoneChange = (zone) => {
     if (zone === 'All Zones') {
@@ -236,25 +224,56 @@ const Schedule = () => {
            return;
       }
 
-      const scheduleData = {
-          message: formData.message, 
-          date: formData.date,
-          time: formData.time,
-          repeat: formData.repeat,
-          zones: activeZones.join(', '),
-          status: 'Pending',
-          type: audioBlob ? 'voice' : 'text',
-          audio: audioBlob 
-      };
+      const processSubmission = async () => {
+          let audioString = null;
+          if (audioBlob) {
+              // Convert Blob to Base64
+              const reader = new FileReader();
+              const base64Promise = new Promise((resolve, reject) => {
+                  reader.onloadend = () => {
+                      const result = reader.result;
+                      // Check size (~800KB limit for Firestore safety)
+                      if (result.length > 800000) {
+                          reject(new Error("Audio recording is too long (Limit: ~60 seconds)."));
+                      } else {
+                          resolve(result);
+                      }
+                  };
+                  reader.onerror = reject;
+                  reader.readAsDataURL(audioBlob); 
+              });
 
-      if (editId) {
-          updateSchedule(editId, scheduleData, currentUser?.name);
-      } else {
-          addSchedule(scheduleData, currentUser?.name);
-      }
+              try {
+                  audioString = await base64Promise;
+              } catch (err) {
+                  setInfoMessage(err.message);
+                  setShowInfoModal(true);
+                  return;
+              }
+          }
+
+          const scheduleData = {
+              message: formData.message, 
+              date: formData.date,
+              time: formData.time,
+              repeat: formData.repeat,
+              zones: activeZones.join(', '),
+              status: 'Pending',
+              type: audioBlob ? 'voice' : 'text',
+              audio: audioString // Send Base64 string
+          };
+
+          if (editId) {
+              await updateSchedule(editId, scheduleData, currentUser?.name);
+          } else {
+              await addSchedule(scheduleData, currentUser?.name);
+          }
+          
+          setShowModal(false);
+          resetForm();
+      };
       
-      setShowModal(false);
-      resetForm();
+      processSubmission();
   };
   
   const resetForm = () => {
@@ -337,7 +356,9 @@ const Schedule = () => {
                         <div className="md:col-span-4 font-medium flex items-center">
                             <span className="md:hidden font-bold text-gray-500 mr-2">Message:</span>
                             {schedule.type === 'voice' && <i className="material-icons text-primary mr-2 text-sm">mic</i>}
-                            {schedule.message}
+                            <span className="break-words line-clamp-2 md:truncate" title={schedule.message}>
+                                {schedule.message.length > 50 ? schedule.message.substring(0, 50) + '...' : schedule.message}
+                            </span>
                         </div>
                         
                         <div className="md:col-span-2 text-gray-500 flex md:block">
@@ -444,7 +465,7 @@ const Schedule = () => {
                             <span className="text-sm font-medium">Audio Recorded Successfully</span>
                         </div>
                         <div className="flex items-center space-x-2">
-                             <audio src={audioBlob instanceof Blob ? URL.createObjectURL(audioBlob) : ''} controls className="h-8 w-32" />
+                             <audio ref={audioPreviewRef} src={audioBlob instanceof Blob ? URL.createObjectURL(audioBlob) : ''} controls className="h-8 w-32" />
                              <button type="button" onClick={resetRecording} className="text-red-500 hover:bg-red-50 p-1 rounded-full"><i className="material-icons text-sm">delete</i></button>
                         </div>
                     </div>

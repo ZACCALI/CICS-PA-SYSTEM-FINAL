@@ -1,12 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
+import api from '../../api/axios'; // Import API for direct Text Broadcast calls
 import Modal from '../common/Modal';
 
 const RealTime = () => {
-  const { addSchedule, logActivity, updateLog, broadcastActive, startBroadcast, stopBroadcast, broadcastStream, zones, setZones, emergencyActive } = useApp();
-  const { currentUser } = useAuth();
+  const { addSchedule, logActivity, updateLog, broadcastActive, startBroadcast, stopBroadcast, broadcastStream, zones, setZones, emergencyActive, stopAllAudio, systemState } = useApp();
+  const { currentUser, loading: authLoading } = useAuth();
   const [currentLogId, setCurrentLogId] = useState(null); // Track session log
+  
+  // Lock Logic
+  const isSystemLoading = !systemState || authLoading;
+  const activeTask = systemState?.active_task;
+
+  // Lock if: Loading OR Active Task belongs to someone else
+  const isLockedByOther = isSystemLoading || (activeTask && 
+                          (activeTask.type === 'voice' || activeTask.type === 'text') && 
+                          activeTask.data?.user !== (currentUser?.name || 'Admin'));
+
+  const lockingUser = isSystemLoading ? 'System' : (isLockedByOther ? (activeTask?.data?.user || 'Another User') : null);
   
   // Ref for readable start time
   const startTimeStrRef = useRef('');
@@ -107,7 +119,14 @@ const RealTime = () => {
             drawVisualizer();
         } catch(e) { console.error(e); }
 
+        const handleStop = () => {
+            if (audioContextRef.current) audioContextRef.current.close();
+            if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+        };
+        window.addEventListener('stop-all-audio', handleStop);
+
         return () => {
+            window.removeEventListener('stop-all-audio', handleStop);
             if (audioContextRef.current) audioContextRef.current.close();
             if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
         };
@@ -142,11 +161,16 @@ const RealTime = () => {
       draw();
   };
   const toggleBroadcast = async () => {
+    if (emergencyActive) {
+        setModalMessage("Emergency Alert is currently active. All broadcasts are suspended.");
+        setShowModal(true);
+        return;
+    }
+
     if (broadcastActive) {
-        stopBroadcast();
+        stopBroadcast(currentUser?.name || 'Admin');
         
         if (currentLogId) {
-             const durationSec = Math.round((Date.now() - startTimeRef.current) / 1000);
              const endTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
              
              updateLog(currentLogId, {
@@ -157,13 +181,7 @@ const RealTime = () => {
         } else {
              // Fallback
              logActivity(currentUser?.name, 'Stopped Voice Broadcast', 'Voice', 'Microphone deactivated');
-        return;
-    }
-    
-    // Priority Check
-    if (emergencyActive) {
-        setModalMessage("Cannot broadcast during an active EMERGENCY.");
-        setShowModal(true);
+        }
         return;
     }
 
@@ -173,29 +191,29 @@ const RealTime = () => {
         return;
     }
     
-    const success = await startBroadcast();
+    // Pass User and Zones to Context
+    const success = await startBroadcast(currentUser?.name || 'Admin', zones);
+    
     if (success) {
         startTimeRef.current = Date.now();
         startTimeStrRef.current = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         
-        const logRes = await logActivity(currentUser?.name, 'Active Voice Broadcast', 'Voice', 'Microphone is active...');
-        
-        if (logRes && logRes.error === 'CONFLICT') {
-             // Backend blocked us (race condition or late sync)
-             stopBroadcast();
-             setModalMessage("Broadcast denied by System (Emergency Active).");
-             setShowModal(true);
-             return;
-        }
-
-        setCurrentLogId(logRes);
+        const logId = await logActivity(currentUser?.name, 'Active Voice Broadcast', 'Voice', 'Microphone is active...');
+        setCurrentLogId(logId);
     } else {
-        setModalMessage("Could not access microphone.");
-        setShowModal(true);
+        // Error handled in context (alert shown if 409), but we can show modal fallback
+        // setModalMessage("Could not start broadcast.");
+        // setShowModal(true);
     }
   };
 
-  const handleTextBroadcast = () => {
+  const handleTextBroadcast = async () => {
+    if (emergencyActive) {
+        setModalMessage("Emergency Alert is currently active. Text announcements are disabled.");
+        setShowModal(true);
+        return;
+    }
+
     if (broadcastActive) {
         setModalMessage('Cannot send text announcement while voice broadcast is active.');
         setShowModal(true);
@@ -214,24 +232,39 @@ const RealTime = () => {
         return;
     }
 
-    // Speak
-    if ('speechSynthesis' in window) {
-        const utterance = new SpeechSynthesisUtterance(textMessage);
-        const voice = voices.find(v => v.name === selectedVoice);
-        if (voice) utterance.voice = voice;
-        window.speechSynthesis.speak(utterance);
-    } else {
-        setModalMessage("Your browser does not support Text-to-Speech.");
+    // Stop existing audio locally immediately for responsiveness
+    stopAllAudio();
+    
+    // Send to Backend Controller (Global Sync & Priority)
+    const activeZonesList = Object.keys(zones).filter(z => zones[z]);
+
+    try {
+        await api.post('/realtime/start', {
+             user: currentUser?.name || 'Admin',
+             zones: activeZonesList,
+             type: 'text',
+             content: textMessage
+        });
+
+        // Log to Global History
+        logActivity(
+            currentUser?.name, 
+            'Broadcasted Text', 
+            'Text', 
+            `Message: "${textMessage}" to ${activeZonesList.filter(z => z !== 'All Zones').join(', ')}`
+        );
+        
+        setTextMessage('');
+        
+    } catch (err) {
+        console.error("Text Broadcast Failed", err);
+        setModalMessage(
+            err.response && err.response.status === 409 
+            ? "System Busy: Another broadcast is active." 
+            : "Failed to broadcast message."
+        );
         setShowModal(true);
     }
-
-    // Capture
-    const activeZones = Object.keys(zones).filter(z => zones[z] && z !== 'All Zones');
-    
-    // Log to Global History (NOT Schedule)
-    logActivity(currentUser?.name, 'Broadcasted Text', 'Text', `Message: "${textMessage}" to ${activeZones.join(', ')}`);
-
-    setTextMessage('');
   };
 
   return (
@@ -239,6 +272,28 @@ const RealTime = () => {
       <h2 className="text-2xl font-bold text-gray-800 flex items-center mb-6">
         <i className="material-icons mr-3 text-primary">campaign</i> Real-Time Announcement
       </h2>
+
+      {emergencyActive && (
+          <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded shadow-sm flex items-center animate-pulse mb-6">
+              <i className="material-icons text-2xl mr-3">warning</i>
+              <div>
+                  <p className="font-bold">Emergency Alert Active</p>
+                  <p className="text-sm">Broadcast features are temporarily disabled.</p>
+              </div>
+          </div>
+      )}
+
+      {isLockedByOther && !emergencyActive && (
+          <div className="bg-orange-100 border-l-4 border-orange-500 text-orange-800 p-4 rounded shadow-sm flex items-center mb-6 animate-fade-in">
+              <i className="material-icons text-2xl mr-3">lock</i>
+              <div>
+                  <p className="font-bold">System Busy</p>
+                  <p className="text-sm">
+                      <span className="font-semibold">{lockingUser}</span> is currently broadcasting. Please wait.
+                  </p>
+              </div>
+          </div>
+      )}
 
       {/* Live Broadcast */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
@@ -259,9 +314,10 @@ const RealTime = () => {
            
            <button 
              onClick={toggleBroadcast}
-             className={`px-8 py-3 rounded-full font-bold shadow-lg transition-all transform hover:scale-105 relative z-10 ${broadcastActive ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-primary hover:bg-primary-dark text-white'}`}
+             disabled={isLockedByOther || emergencyActive}
+             className={`px-8 py-3 rounded-full font-bold shadow-lg transition-all transform hover:scale-105 relative z-10 ${broadcastActive ? 'bg-red-500 hover:bg-red-600 text-white' : ((isLockedByOther || emergencyActive) ? 'bg-gray-300 text-gray-500 cursor-not-allowed transform-none hover:scale-100 shadow-none' : 'bg-primary hover:bg-primary-dark text-white')}`}
            >
-             {broadcastActive ? 'STOP BROADCAST' : 'START BROADCAST'}
+             {isSystemLoading ? 'CONNECTING...' : (emergencyActive ? 'EMERGENCY ACTIVE' : (isLockedByOther ? 'SYSTEM BUSY' : (broadcastActive ? 'STOP BROADCAST' : 'START BROADCAST')))}
            </button>
            
            <p className="mt-4 text-sm text-gray-500 relative z-10">
@@ -304,11 +360,12 @@ const RealTime = () => {
           </div>
           
           <button 
-            onClick={handleTextBroadcast}
-            className="w-full md:w-auto px-6 py-2.5 bg-primary hover:bg-primary-dark text-white rounded-lg shadow-md font-medium flex items-center justify-center transition-all"
-          >
-            <i className="material-icons mr-2">volume_up</i> Broadcast Text
-          </button>
+             onClick={handleTextBroadcast}
+             disabled={isLockedByOther || broadcastActive || emergencyActive}
+             className={`w-full md:w-auto px-6 py-2.5 rounded-lg shadow-md font-medium flex items-center justify-center transition-all ${isLockedByOther || broadcastActive || emergencyActive ? 'bg-gray-300 text-gray-500 cursor-not-allowed shadow-none' : 'bg-primary hover:bg-primary-dark text-white'}`}
+           >
+             <i className="material-icons mr-2">volume_up</i> {emergencyActive ? 'Emergency Active' : (isLockedByOther ? 'System Busy' : (broadcastActive ? 'Voice Active' : 'Broadcast Text'))}
+           </button>
         </div>
       </div>
 

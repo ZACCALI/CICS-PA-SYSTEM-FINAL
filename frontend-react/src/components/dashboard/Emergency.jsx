@@ -7,51 +7,24 @@ const Emergency = () => {
   const { emergencyActive, toggleEmergency, emergencyHistory, clearEmergencyHistory, logActivity } = useApp();
   const { currentUser } = useAuth();
   const [showConfirm, setShowConfirm] = useState(false);
-  const audioRef = useRef(null);
+  const [showLockModal, setShowLockModal] = useState(false);
+  // Audio logic moved to AppContext for Singleton control
+  // useEffect(() => { ... }, [emergencyActive]); // REMOVED
 
-  useEffect(() => {
-      // Create oscillator for siren if active
-      let oscillator = null;
-      let gainNode = null;
-      let interval = null;
-      let audioCtx = null;
-
-      if (emergencyActive) {
-          const AudioContext = window.AudioContext || window.webkitAudioContext;
-          audioCtx = new AudioContext();
-          oscillator = audioCtx.createOscillator();
-          gainNode = audioCtx.createGain();
-
-          oscillator.type = 'sine';
-          oscillator.frequency.value = 800; // Start freq
-          
-          gainNode.gain.value = 0.3; // Reduce volume to 30% to protect PAM8610
-          
-          oscillator.connect(gainNode);
-          gainNode.connect(audioCtx.destination);
-          
-          oscillator.start();
-          
-          // Siren effect
-          let isHigh = false;
-          interval = setInterval(() => {
-              const now = audioCtx.currentTime;
-              const freq = isHigh ? 800 : 1200;
-              oscillator.frequency.setValueAtTime(freq, now);
-              isHigh = !isHigh;
-          }, 600);
-      }
-
-      return () => {
-          if (oscillator) oscillator.stop();
-          if (audioCtx) audioCtx.close();
-          if (interval) clearInterval(interval);
-      };
-  }, [emergencyActive]);
+  // Activator Logic
+  // Check if history exists and has items
+  const lastEmergency = emergencyHistory && emergencyHistory.length > 0 ? emergencyHistory[0] : null;
+  const activator = lastEmergency ? lastEmergency.user : 'Unknown';
+  // Check ownership
+  const isOwner = (currentUser?.name || 'Admin') === activator;
 
   const handleActivate = () => {
+    if (!currentUser || !currentUser.name) {
+        alert("Unable to verify user identity. Please reload.");
+        return;
+    }
     setShowConfirm(false);
-    toggleEmergency(currentUser?.name || 'Admin', 'ACTIVATED');
+    toggleEmergency(currentUser.name, 'ACTIVATED');
   };
 
   return (
@@ -67,7 +40,9 @@ const Emergency = () => {
            </div>
            <div className="ml-4 flex-1">
              <h3 className="text-xl font-bold text-red-800">
-                 {emergencyActive ? 'EMERGENCY ALERT ACTIVE' : 'Emergency Broadcast System'}
+                 {emergencyActive 
+                    ? `EMERGENCY ALERT ACTIVE${lastEmergency ? ` (Started by ${activator})` : ''}` 
+                    : 'Emergency Broadcast System'}
              </h3>
              <p className="mt-2 text-red-700 leading-relaxed">
                {emergencyActive 
@@ -76,14 +51,33 @@ const Emergency = () => {
              </p>
              <div className="mt-6">
                 {emergencyActive ? (
-                    <button 
-                        onClick={() => {
-                            toggleEmergency(currentUser?.name || 'Admin', 'DEACTIVATED');
-                        }}
-                        className="bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 px-8 rounded-lg shadow-lg transform transition hover:scale-105 flex items-center"
-                    >
-                        <i className="material-icons mr-2">power_settings_new</i> DEACTIVATE ALERT
-                    </button>
+                    isOwner ? (
+                        /* OWNER: Allow Deactivation */
+                        <button 
+                            onClick={() => {
+                                if (currentUser?.name) {
+                                    toggleEmergency(currentUser.name, 'DEACTIVATED');
+                                }
+                            }}
+                            className="bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 px-8 rounded-lg shadow-lg transform transition hover:scale-105 flex items-center"
+                        >
+                            <i className="material-icons mr-2">power_settings_new</i> DEACTIVATE ALERT
+                        </button>
+                    ) : (
+                        /* NON-OWNER: Show Status / Disabled Look */
+                        <div className="relative group">
+                            <button 
+                                onClick={() => setShowLockModal(true)}
+                                disabled={true}
+                                className="bg-gray-400 text-gray-100 font-bold py-3 px-8 rounded-lg shadow cursor-not-allowed flex items-center w-full justify-center"
+                            >
+                                <i className="material-icons mr-2">lock</i> EMERGENCY ONGOING
+                            </button>
+                            <p className="text-center text-xs text-red-800 mt-2 font-semibold">
+                                Protected: Only {activator} can deactivate.
+                            </p>
+                        </div>
+                    )
                 ) : (
                     <button 
                         onClick={() => setShowConfirm(true)}
@@ -156,6 +150,32 @@ const Emergency = () => {
                </div>
                <p className="text-gray-600">
                    Are you sure you want to activate the emergency alert system? This will override all current announcements and play an alarm to all connected devices.
+               </p>
+           </div>
+       </Modal>
+
+       {/* Lock Modal */}
+       <Modal
+           isOpen={showLockModal}
+           onClose={() => setShowLockModal(false)}
+           title="Emergency Locked"
+           type="info"
+           footer={
+               <button 
+                  onClick={() => setShowLockModal(false)}
+                  className="px-6 py-2 bg-gray-800 text-white rounded-lg font-medium shadow-sm hover:bg-gray-900"
+               >
+                  Understood
+               </button>
+           }
+       >
+           <div className="text-center p-4">
+               <i className="material-icons text-5xl text-gray-400 mb-4">lock</i>
+               <p className="text-lg text-gray-700 font-semibold mb-2">Action Blocked</p>
+               <p className="text-gray-600">
+                   Emergency is currently active.
+                   <br/>
+                   Only the activator (<span className="font-bold text-red-600">{emergencyHistory[0]?.user || 'Unknown'}</span>) can deactivate it.
                </p>
            </div>
        </Modal>

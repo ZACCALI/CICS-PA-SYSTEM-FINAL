@@ -115,18 +115,28 @@ export const AuthProvider = ({ children }) => {
     await updateProfile(user, { displayName: name });
 
     // Create Firestore Document
-    const defaultRole = 'user'; // Hardcode user for signups, Admin created manually or seeded
+    const defaultRole = 'user'; 
     const newUserDoc = {
         name,
         email,
         role: defaultRole,
-        status: 'pending', // Default to pending
+        status: 'pending', 
         createdAt: new Date().toISOString(),
         isOnline: false,
-        // lastLogin: undefined - until first approved login
     };
 
-    await setDoc(doc(db, "users", user.uid), newUserDoc);
+    try {
+        await setDoc(doc(db, "users", user.uid), newUserDoc);
+    } catch (firestoreError) {
+        console.error("Firestore creation failed, rolling back Auth user:", firestoreError);
+        // Rollback: Delete the user from Auth so they can try again
+        try {
+            await user.delete();
+        } catch (deleteErr) {
+            console.error("Rollback failed (User manual cleanup required):", deleteErr);
+        }
+        throw new Error("Registration failed. Please try again.");
+    }
 
     // FORCE SIGNOUT - User is pending approval
     await signOut(auth);

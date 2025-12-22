@@ -261,8 +261,10 @@ const HistoryLogs = () => {
                                         {log.type}
                                     </span>
                                 </td>
-                                <td className="px-6 py-4 text-gray-500 max-w-xs truncate" title={log.details}>
-                                    {log.details}
+                                <td className="px-6 py-4 text-gray-500">
+                                    <div className="max-w-xs truncate cursor-help" title={log.details}>
+                                        {log.details.length > 50 ? log.details.substring(0, 50) + '...' : log.details}
+                                    </div>
                                 </td>
                                 <td className="px-6 py-4 text-right">
                                      <i className="material-icons text-gray-300">chevron_right</i>

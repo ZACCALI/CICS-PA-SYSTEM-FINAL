@@ -38,6 +38,9 @@ export const AppProvider = ({ children }) => {
     'Library': false,
     'Classrooms': false
   });
+  
+  // Track specific System State Details (Mode, Active Task User, etc)
+  const [systemState, setSystemState] = useState({});
 
   // Initial Fetch & Listeners
   useEffect(() => {
@@ -48,38 +51,28 @@ export const AppProvider = ({ children }) => {
             const data = docSnap.data();
             setEmergencyActive(data.active);
             setEmergencyHistory(data.history || []);
-            
-            // REACTIVE INTERRUPTION:
-            if (data.active) {
-                // Emergency just turned on (or is on).
-                // Force stop all other audio.
-                // We can't call stopAllAudio directly if it's defined below?
-                // It is defined below. We need to move stopAllAudio up or use a ref/effect.
-                // Better: Use a separate useEffect to watch 'emergencyActive' state change.
-            }
         } else {
             setEmergencyActive(false);
             setEmergencyHistory([]);
         }
     });
 
+
+    
     // 2. Schedules Listener (Real-time)
     const schedulesQuery = query(collection(db, "schedules"));
     const unsubSchedules = onSnapshot(schedulesQuery, (snapshot) => {
         const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        // Optional: Sort by date/time if not sorted by query
-        // For now, accept default or client-side sort if needed
         setSchedules(list);
     }, (error) => {
         console.error("Schedules sync error:", error);
     });
 
-    // 3. Activity Logs Listener (Real-time, Last 50) - Optimized from Polling
+    // 3. Activity Logs Listener
     const logsQuery = query(collection(db, "logs"), orderBy("timestamp", "desc"), limit(50));
     const unsubLogs = onSnapshot(logsQuery, (snapshot) => {
         const list = snapshot.docs.map(doc => {
              const data = doc.data();
-             // Handle Firestore Timestamp or string
              let dateObj = new Date();
              if (data.timestamp && typeof data.timestamp.toDate === 'function') {
                  dateObj = data.timestamp.toDate();
@@ -107,18 +100,214 @@ export const AppProvider = ({ children }) => {
 
     return () => {
         unsubEmergency();
+        // unsubSystem(); // We didn't fully implement it in this block
         unsubSchedules();
         unsubLogs();
     };
-  }, []);
+  }, []); // End of mount effect, but we need the system listener to actually work.
 
-  // 4. Reactive Priority Enforcement
+  // Siren Audio Ref (Singleton)
+  const emergencyAudioRef = useRef(null);
+  const sirenIntervalRef = useRef(null);
+  const lastBroadcastTaskId = useRef(null);
+  const broadcastStartingRef = useRef(false); // Grace period flag
+
+  const playEmergencySiren = () => {
+      // Prevent double-start
+      if (emergencyAudioRef.current) return;
+
+      try {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          const ctx = new AudioContext();
+          emergencyAudioRef.current = ctx;
+
+          const oscillator = ctx.createOscillator();
+          const gainNode = ctx.createGain();
+
+          oscillator.type = 'sine';
+          oscillator.frequency.value = 600; 
+          
+          // SAFETY: Limit volume to 10%
+          gainNode.gain.value = 0.1; 
+          
+          oscillator.connect(gainNode);
+          gainNode.connect(ctx.destination);
+          
+          oscillator.start();
+          
+          // Siren Pulse Effect
+          let isHigh = false;
+          sirenIntervalRef.current = setInterval(() => {
+              if (ctx.state === 'closed') return;
+              const now = ctx.currentTime;
+              const freq = isHigh ? 600 : 900; 
+              oscillator.frequency.setValueAtTime(freq, now);
+              isHigh = !isHigh;
+          }, 800); 
+
+      } catch (e) {
+          console.error("Siren start failed", e);
+      }
+  };
+
+  const stopEmergencySiren = () => {
+      if (sirenIntervalRef.current) {
+          clearInterval(sirenIntervalRef.current);
+          sirenIntervalRef.current = null;
+      }
+      
+      if (emergencyAudioRef.current) {
+          try {
+              emergencyAudioRef.current.close();
+          } catch(e) {
+              console.error("Siren close error", e);
+          }
+          emergencyAudioRef.current = null;
+      }
+  };
+
+  // Centralized Emergency Audio Effect
   useEffect(() => {
-    if (emergencyActive) {
-        // Emergency Override: Stop everything else.
-        stopAllAudio();
-    }
+      if (emergencyActive) {
+          // Play ONLY if not already playing (handled by ref check inside function but good to be explicit)
+          playEmergencySiren();
+      } else {
+          stopEmergencySiren();
+      }
+
+      // Cleanup on unmount (App close)
+      return () => stopEmergencySiren();
   }, [emergencyActive]);
+  
+  // Track currently playing task to prevent re-triggering
+  const currentTaskIdRef = useRef(null);
+  const systemAudioRef = useRef(null); // For file playback
+
+  const stopSystemPlayback = () => {
+      // 1. Stop Audio Object
+      if (systemAudioRef.current) {
+          systemAudioRef.current.pause();
+          systemAudioRef.current = null;
+      }
+      // 2. Stop TTS
+      if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+      }
+      currentTaskIdRef.current = null;
+  };
+
+  const playSystemTask = async (task) => {
+      if (!task || !task.data) return;
+      if (currentTaskIdRef.current === task.id) return; // Already playing this task
+
+      // Stop previous if any
+      stopSystemPlayback();
+      currentTaskIdRef.current = task.id;
+
+      // Resolve Type (Root takes precedence, fallback to data check)
+      const type = task.type || task.data?.type || 'text';
+
+      // Ignore Background tasks (Content is just metadata/title, handled by local player)
+      if (type === 'BACKGROUND' || type === 'background') return;
+
+      console.log("Starting System Task:", task);
+
+      try {
+          
+          if (type === 'voice' && task.data.audio) {
+              // Play Base64 Audio
+              const audioSrc = task.data.audio.startsWith('data:') 
+                  ? task.data.audio 
+                  : `data:audio/webm;base64,${task.data.audio}`;
+              
+              const audio = new Audio(audioSrc);
+              systemAudioRef.current = audio;
+              
+              audio.onended = () => {
+                  console.log("Task Audio Ended");
+                  // Notify Backend to Clear State
+                  api.post('/realtime/complete', { task_id: task.id })
+                     .catch(err => console.error("Failed to complete task:", err));
+                  
+                  // Clear local state
+                  stopSystemPlayback();
+              };
+              
+              await audio.play();
+              
+          } else if (task.data.message || task.data.content) {
+              // Text to Speech
+              if ('speechSynthesis' in window) {
+                  const utterance = new SpeechSynthesisUtterance(task.data.message || task.data.content);
+                  utterance.rate = 0.9;
+                  
+                  utterance.onend = () => {
+                      console.log("TTS Ended");
+                      api.post('/realtime/complete', { task_id: task.id })
+                         .catch(err => console.error("Failed to complete task:", err));
+                      stopSystemPlayback();
+                  };
+                  
+                  window.speechSynthesis.speak(utterance);
+              }
+          }
+      } catch (err) {
+          console.error("Failed to play system task:", err);
+      }
+  };
+
+  // Global System State Listener (The Executor)
+  useEffect(() => {
+      const systemRef = doc(db, "system", "state");
+      const unsubSystem = onSnapshot(systemRef, (docSnap) => {
+          if (docSnap.exists()) {
+              const data = docSnap.data();
+              setSystemState(data);
+              
+              // 1. EMERGENCY OVERRIDE
+              if (data.mode === 'EMERGENCY') {
+                  // Strictly stop all local activity (Mic, Music, System)
+                  stopAllAudio();
+                  return; 
+              }
+
+              // 2. Active Task Playback
+              if (data.active_task) {
+                  // If new task is High Priority (Voice/Text), stop any low-priority Music.
+                  if (data.active_task.type !== 'BACKGROUND' && data.active_task.priority !== 10) {
+                      window.dispatchEvent(new Event('stop-all-audio'));
+                  }
+
+                  // CHECK PREEMPTION: If we are broadcasting but the Active Task ID doesn't match ours, we lost the lock.
+                  if (mediaStreamRef.current && lastBroadcastTaskId.current && data.active_task.id !== lastBroadcastTaskId.current) {
+                       console.warn("Broadcast preempted.");
+                       stopBroadcast(); 
+                       alert("Your broadcast was interrupted by another user or higher priority event.");
+                  }
+
+                  playSystemTask(data.active_task);
+              } else {
+                  // No active task
+                  
+                  // If we thought we were broadcasting, but system says NO task, we must have been killed/timed out.
+                  // Check grace period to avoid race condition.
+                  if (mediaStreamRef.current && !broadcastStartingRef.current) {
+                       console.warn("Broadcast ended by system.");
+                       stopBroadcast();
+                  }
+
+                  // Stop System if playing
+                  if (currentTaskIdRef.current) {
+                      stopSystemPlayback();
+                  }
+              }
+          }
+      });
+      return () => {
+          unsubSystem();
+          stopSystemPlayback();
+      };
+  }, [emergencyActive]); // Depend on emergency to re-eval if needed, or just keep it simple. 
 
   // Removed manual fetchSchedules as it is now real-time
 
@@ -135,10 +324,9 @@ export const AppProvider = ({ children }) => {
   // Methods
   const addSchedule = async (schedule, user = 'Admin') => {
       try {
-          // Remove audio blob from payload if present (complex to send via JSON)
-          // We'd upload it first, get URL, then save.
-          // For this demo 'connection', we stick to text metadata or ignore blob in backend save.
-          const { audio, ...payload } = schedule; 
+          // Audio is now expected to be a Base64 string if present
+          // We no longer strip it.
+          const { ...payload } = schedule; 
           // Include user in payload for logging
           const data = { ...payload, user };
           
@@ -152,7 +340,7 @@ export const AppProvider = ({ children }) => {
 
   const updateSchedule = async (id, updatedData, user = 'Admin') => {
        try {
-          const { audio, ...payload } = updatedData;
+          const { ...payload } = updatedData;
           const data = { ...payload, user };
           await api.put(`/scheduled/${id}`, data);
           setSchedules(prev => prev.map(s => s.id === id ? { ...s, ...updatedData } : s));
@@ -179,12 +367,12 @@ export const AppProvider = ({ children }) => {
   };
 
   const toggleEmergency = async (user = 'Admin', action = 'TOGGLE') => {
+      // OPTIMISTIC KILL: Stop everything immediately if activating
+      if (action === 'ACTIVATED') {
+          stopAllAudio();
+      }
+
       try {
-          // If action is TOGGLE, we should ideally know the current state to flip it. 
-          // But since we want to be explicit, let's assume the caller passes explicit 'ACTIVATED' or 'DEACTIVATED'.
-          // If they pass 'TOGGLE', valid backend will handle it as before (if we kept that logic, but we changed it).
-          // So we should enforce explicit action from caller.
-          
           const res = await api.post('/emergency/toggle', { user, action });
           setEmergencyActive(res.data.active);
           setEmergencyHistory(res.data.history);
@@ -235,9 +423,6 @@ export const AppProvider = ({ children }) => {
           }
       } catch (e) {
           console.error("Log failed", e);
-          if (e.response && e.response.status === 409) {
-              return { error: 'CONFLICT' };
-          }
       }
       return null;
   };
@@ -281,8 +466,32 @@ export const AppProvider = ({ children }) => {
   const audioContextRef = useRef(null);
   const [broadcastStream, setBroadcastStream] = useState(null);
 
-  const startBroadcast = async () => {
+  const startBroadcast = async (user, zonesObj) => {
       try {
+          // 1. Register with Backend Controller (Request Lock)
+          const zoneList = Object.keys(zonesObj).filter(k => zonesObj[k]);
+          
+          const res = await api.post('/realtime/start', {
+              user: user || 'Unknown',
+              zones: zoneList,
+              type: 'voice'
+          });
+
+          // Store Task ID and Set Grace Period
+          lastBroadcastTaskId.current = res.data.task_id;
+          broadcastStartingRef.current = true;
+          setTimeout(() => { broadcastStartingRef.current = false; }, 5000);
+
+          // 2. Preemptively stop all other audio (Schedules, File Players)
+          // DO NOT call stopAllAudio() here because it calls stopBroadcast(), killing this request!
+          stopSystemPlayback();
+          if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+          window.dispatchEvent(new Event('stop-all-audio'));
+          document.querySelectorAll('audio').forEach(el => {
+               try { el.pause(); el.currentTime = 0; } catch (e) {}
+          });
+          
+          // 3. Start Microphone
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           mediaStreamRef.current = stream;
           setBroadcastStream(stream);
@@ -297,19 +506,31 @@ export const AppProvider = ({ children }) => {
 
           setBroadcastActive(true);
           
-          // Log start
-          // Assuming 'currentUser' is available here? No. 
-          // We rely on caller to logActivity, OR we log here.
-          // Caller (RealTime.jsx) calls logActivity.
-          
           return true;
       } catch (err) {
-          console.error("Mic Error:", err);
+          console.error("Broadcast Start Failed:", err);
+          // If 409, it means system busy
+          if (err.response && err.response.status === 409) {
+              alert("System is busy. Another broadcast is active.");
+          }
           return false;
       }
   };
 
-  const stopBroadcast = () => {
+  const stopBroadcast = async (user = 'System') => {
+      try {
+          const taskId = lastBroadcastTaskId.current;
+          let url = `/realtime/stop?user=${encodeURIComponent(user)}`;
+          if (taskId) {
+               url += `&task_id=${encodeURIComponent(taskId)}`;
+          }
+          await api.post(url);
+      } catch (e) {
+          console.error("Failed to stop backend broadcast:", e);
+      }
+      
+      lastBroadcastTaskId.current = null;
+
       if (mediaStreamRef.current) {
           mediaStreamRef.current.getTracks().forEach(track => track.stop());
           mediaStreamRef.current = null;
@@ -331,22 +552,27 @@ export const AppProvider = ({ children }) => {
   };
 
   const stopAllAudio = () => {
-      // 1. Stop Broadcast / Mic
+      // 1. Stop System Playback (Schedules/TTS)
+      stopSystemPlayback();
+
+      // 2. Stop Broadcast / Mic
       stopBroadcast();
       
-      // 2. Stop Text-to-Speech
+      // 3. Stop Text-to-Speech
       if ('speechSynthesis' in window) {
           window.speechSynthesis.cancel();
       }
 
-      // 3. Stop any file audio (if managed globally, currently local)
-      
-      // 4. Force Emergency silence? 
-      // Emergency sound is managed by Emergency.jsx effect. When that unmounts, it stops.
-      // But if we want to be safe:
-      // We can't easily reach into Emergency.jsx state from here.
-      // However, we can simply rely on the fact that 'resetState' will clear data?
-      // No, data comes from Firestore.
+      // 4. Stop any file audio (Global Event for React Components)
+      window.dispatchEvent(new Event('stop-all-audio'));
+
+      // 4. AGGRESSIVE FAILSAFE: Kill any rogue HTML5 Audio/Video elements
+      document.querySelectorAll('audio').forEach(el => {
+          try { el.pause(); el.currentTime = 0; } catch (e) {}
+      });
+      document.querySelectorAll('video').forEach(el => {
+           try { el.pause(); el.currentTime = 0; } catch (e) {}
+      });
   };
 
   const resetState = (userName = 'System') => {
@@ -387,8 +613,9 @@ export const AppProvider = ({ children }) => {
       startBroadcast,
       stopBroadcast,
       broadcastStream,
-      zones,
-      setZones,
+      activeTask: systemState?.active_task,
+      systemState, // Export Full State for Locking Logic
+      zones, setZones,
       
       stopAllAudio, // New
       resetState    // New

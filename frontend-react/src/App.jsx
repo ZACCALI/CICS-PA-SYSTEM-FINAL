@@ -6,6 +6,7 @@ import UserDashboard from './pages/UserDashboard'
 
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppProvider } from './context/AppContext';
+import OfflineIndicator from './components/common/OfflineIndicator';
 
 import DashboardSkeleton from './components/DashboardSkeleton';
 
@@ -32,6 +33,7 @@ function App() {
   return (
     <AuthProvider>
       <AppProvider>
+        <OfflineIndicator />
         <Router>
           <Routes>
             <Route path="/" element={<Login />} />
